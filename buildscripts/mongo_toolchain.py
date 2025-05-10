@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -82,17 +83,28 @@ class MongoToolchain:
 def _execute_bazel(argv):
     bazel_cmd = make_bazel_cmd(get_bazel_path(), argv)
     cmd = f"{bazel_cmd['exec']} {' '.join(bazel_cmd['args'])}"
-    return subprocess.check_output(
-        cmd,
-        env=bazel_cmd["env"],
-        shell=True,
-        text=True,
-    ).strip()
+    for i in range(5):
+        try:
+            return subprocess.check_output(
+                cmd,
+                env=bazel_cmd["env"],
+                shell=True,
+                text=True,
+            ).strip()
+        except subprocess.CalledProcessError as e:
+            print(
+                f"Failed to execute bazel command: `{e.cmd}` exited with code {e.returncode}, retrying in 60s..."
+            )
+            time.sleep(60)
+            if i == 4:
+                raise e
 
 
 def _fetch_bazel_toolchain(version: str) -> None:
     try:
-        _execute_bazel(["build", "--config=local", f"@mongo_toolchain_{version}//:all"])
+        _execute_bazel(
+            ["build", "--bes_backend=", "--bes_results_url=", f"@mongo_toolchain_{version}//:all"]
+        )
     except subprocess.CalledProcessError as e:
         raise MongoToolchainNotFoundError(
             f"Failed to fetch bazel toolchain: `{e.cmd}` exited with code {e.returncode}"

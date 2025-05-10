@@ -46,6 +46,7 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/query/collation/collator_factory_icu.h"
+#include "mongo/db/s/database_sharding_runtime.h"
 #include "mongo/db/s/shard_server_test_fixture.h"
 #include "mongo/db/timeseries/timeseries_options.h"
 #include "mongo/idl/server_parameter_test_util.h"
@@ -373,7 +374,12 @@ TEST_F(MetadataConsistencyTest, CappedAndShardedCollection) {
 
     // Catch the inconsistency.
     const auto inconsistencies = metadata_consistency_util::checkCollectionMetadataConsistency(
-        opCtx, _shardId, _shardId, {configColl}, localCatalogCollections);
+        opCtx,
+        _shardId,
+        _shardId,
+        {configColl},
+        localCatalogCollections,
+        false /*checkRangeDeletionIndexes*/);
     assertCollectionOptionsMismatchInconsistencyFound(
         inconsistencies,
         BSON("capped" << true),
@@ -418,7 +424,12 @@ TEST_F(MetadataConsistencyTest, DefaultCollationMismatchBetweenLocalAndShardingC
 
         // Check the inconsistencies.
         const auto inconsistencies = metadata_consistency_util::checkCollectionMetadataConsistency(
-            opCtx, _shardId, _shardId, {configColl}, localCatalogCollections);
+            opCtx,
+            _shardId,
+            _shardId,
+            {configColl},
+            localCatalogCollections,
+            false /*checkRangeDeletionIndexes*/);
 
         if (expectInconsistencies) {
             BSONObj collationLocalCatalog =
@@ -499,7 +510,12 @@ TEST_F(MetadataConsistencyTest, TimeseriesOptionsMismatchBetweenLocalAndSharding
             // Check the inconsistencies.
             const auto inconsistencies =
                 metadata_consistency_util::checkCollectionMetadataConsistency(
-                    opCtx, _shardId, _shardId, {configColl}, localCatalogCollections);
+                    opCtx,
+                    _shardId,
+                    _shardId,
+                    {configColl},
+                    localCatalogCollections,
+                    false /*checkRangeDeletionIndexes*/);
 
             if (expectInconsistencies) {
                 const BSONObj& localCatalogBSON =
@@ -578,10 +594,8 @@ TEST_F(MetadataConsistencyTest, FindMissingDatabaseMetadataInShardCatalogCache) 
 
     // Introduce an inconsistency in the shard catalog cache.
     {
-        AutoGetDb autoDb(operationContext(), _dbName, MODE_X);
-        auto scopedDss =
-            DatabaseShardingState::assertDbLockedAndAcquireExclusive(operationContext(), _dbName);
-        scopedDss->clearDbInfo(operationContext());
+        auto scopedDsr = DatabaseShardingRuntime::acquireExclusive(operationContext(), _dbName);
+        scopedDsr->clearDbInfo();
     }
 
     // Validate that we can find the inconsistency.
@@ -609,10 +623,8 @@ TEST_F(MetadataConsistencyTest, FindInconsistentDatabaseVersionInShardCatalogCac
 
     // Introduce an inconsistency in the shard catalog cache.
     {
-        AutoGetDb autoDb(operationContext(), _dbName, MODE_X);
-        auto scopedDss =
-            DatabaseShardingState::assertDbLockedAndAcquireExclusive(operationContext(), _dbName);
-        scopedDss->setDbInfo(operationContext(),
+        auto scopedDsr = DatabaseShardingRuntime::acquireExclusive(operationContext(), _dbName);
+        scopedDsr->setDbInfo(operationContext(),
                              DatabaseType{_dbName, kMyShardName, {_dbUuid, Timestamp(2, 0)}});
     }
 
@@ -636,10 +648,8 @@ TEST_F(MetadataConsistencyTest, FindEmptyDurableDatabaseMetadataInShard) {
 
     // Introduce an inconsistency in the shard catalog while mocking it in the cache.
     {
-        AutoGetDb autoDb(operationContext(), _dbName, MODE_X);
-        auto scopedDss =
-            DatabaseShardingState::assertDbLockedAndAcquireExclusive(operationContext(), _dbName);
-        scopedDss->setDbInfo(operationContext(), dbInGlobalCatalog);
+        auto scopedDsr = DatabaseShardingRuntime::acquireExclusive(operationContext(), _dbName);
+        scopedDsr->setDbInfo(operationContext(), dbInGlobalCatalog);
     }
 
     // Validate that we can find the inconsistency.
@@ -661,10 +671,8 @@ TEST_F(MetadataConsistencyTest, FindInconsistentDurableDatabaseMetadataInShardWi
 
     // Mock database metadata in the shard catalog cache.
     {
-        AutoGetDb autoDb(operationContext(), _dbName, MODE_X);
-        auto scopedDss =
-            DatabaseShardingState::assertDbLockedAndAcquireExclusive(operationContext(), _dbName);
-        scopedDss->setDbInfo(operationContext(), dbInGlobalCatalog);
+        auto scopedDsr = DatabaseShardingRuntime::acquireExclusive(operationContext(), _dbName);
+        scopedDsr->setDbInfo(operationContext(), dbInGlobalCatalog);
     }
 
     // Introduce an inconsistency in the shard catalog
@@ -694,10 +702,8 @@ TEST_F(MetadataConsistencyTest, FindMatchingDurableDatabaseMetadataInWrongShard)
 
     // Mock database metadata in the shard catalog cache.
     {
-        AutoGetDb autoDb(operationContext(), _dbName, MODE_X);
-        auto scopedDss =
-            DatabaseShardingState::assertDbLockedAndAcquireExclusive(operationContext(), _dbName);
-        scopedDss->setDbInfo(operationContext(), dbInGlobalCatalog);
+        auto scopedDsr = DatabaseShardingRuntime::acquireExclusive(operationContext(), _dbName);
+        scopedDsr->setDbInfo(operationContext(), dbInGlobalCatalog);
     }
 
     // Introduce an inconsistency in the shard catalog
@@ -724,9 +730,7 @@ TEST_F(MetadataConsistencyTest, FindInconsistentDurableDatabaseMetadataInShard) 
 
     // Mock database metadata in the shard catalog cache.
     {
-        AutoGetDb autoDb(operationContext(), _dbName, MODE_X);
-        auto scopedDss =
-            DatabaseShardingState::assertDbLockedAndAcquireExclusive(operationContext(), _dbName);
+        auto scopedDss = DatabaseShardingRuntime::acquireExclusive(operationContext(), _dbName);
         scopedDss->setDbInfo(operationContext(), dbInGlobalCatalog);
     }
 

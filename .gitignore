@@ -95,7 +95,7 @@ scratch
 /mongosniff*
 /mongotrafficreader*
 
-# binaries from db-contrib-tool
+# artifacts from db-contrib-tool
 /ksdecode*
 /mongo*
 /mongoauditdecrypt*
@@ -110,6 +110,11 @@ scratch
 /mongotmock*
 /mqlrun*
 /wt*
+/lock_gdb_test-*.py
+/optimizer_gdb_test-*.py
+/optimizer_gdb_test_program-*
+/pretty_printer_test-*.py
+/pretty_printer_test_program-*
 
 *.tgz
 *.zip
@@ -325,3 +330,8 @@ etc/evaluated_evergreen.yml
 etc/evaluated_evergreen_nightly.yml
 etc/evaluated_system_perf.yml
 etc/trimmed_system_perf.yml
+
+# evergreen files to ignore when detecting patch changes
+/version_expansions.yml
+/engflow.*
+/.bazelrc.evergreen

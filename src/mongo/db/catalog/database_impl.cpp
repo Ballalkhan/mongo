@@ -114,6 +114,7 @@ namespace {
 
 MONGO_FAIL_POINT_DEFINE(throwWCEDuringTxnCollCreate);
 MONGO_FAIL_POINT_DEFINE(hangBeforeLoggingCreateCollection);
+MONGO_FAIL_POINT_DEFINE(hangAfterParsingValidator);
 MONGO_FAIL_POINT_DEFINE(overrideRecordIdsReplicatedDefault);
 MONGO_FAIL_POINT_DEFINE(hangAndFailAfterCreateCollectionReservesOpTime);
 MONGO_FAIL_POINT_DEFINE(openCreateCollectionWindowFp);
@@ -138,8 +139,7 @@ Status validateDBNameForWindows(StringData dbname) {
 }
 
 void assertNoMovePrimaryInProgress(OperationContext* opCtx, NamespaceString const& nss) {
-    const auto scopedDss =
-        DatabaseShardingState::assertDbLockedAndAcquireShared(opCtx, nss.dbName());
+    const auto scopedDss = DatabaseShardingState::assertDbLockedAndAcquire(opCtx, nss.dbName());
     if (scopedDss->isMovePrimaryInProgress()) {
         LOGV2(4909100, "assertNoMovePrimaryInProgress", logAttrs(nss));
 
@@ -902,16 +902,6 @@ Status DatabaseImpl::userCreateNS(OperationContext* opCtx,
                           // expression for a validator to apply some additional checks.
                           .isParsingCollectionValidator(true)
                           .build();
-        // If the feature compatibility version is not kLatest, and we are validating features as
-        // primary, ban the use of new agg features introduced in kLatest to prevent them from being
-        // persisted in the catalog.
-        // (Generic FCV reference): This FCV check should exist across LTS binary versions.
-        multiversion::FeatureCompatibilityVersion fcv;
-        if (serverGlobalParams.validateFeaturesAsPrimary.load() &&
-            serverGlobalParams.featureCompatibility.acquireFCVSnapshot().isLessThan(
-                multiversion::GenericFCV::kLatest, &fcv)) {
-            expCtx->setMaxFeatureCompatibilityVersion(fcv);
-        }
 
         // If the validation action is printing logs or the level is "moderate", or if the user has
         // defined some encrypted fields in the collection options, then disallow any encryption
@@ -938,6 +928,8 @@ Status DatabaseImpl::userCreateNS(OperationContext* opCtx,
         if (!statusWithMatcher.isOK()) {
             return statusWithMatcher.getStatus();
         }
+
+        hangAfterParsingValidator.pauseWhileSet();
     }
 
     Status status = validateStorageOptions(

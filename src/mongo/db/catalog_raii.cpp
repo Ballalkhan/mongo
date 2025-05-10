@@ -153,7 +153,7 @@ AutoGetDb::AutoGetDb(OperationContext* opCtx,
     }
 
     // The 'primary' database must be version checked for sharding.
-    DatabaseShardingState::assertMatchingDbVersion(opCtx, _dbName);
+    DatabaseShardingState::acquire(opCtx, _dbName)->checkDbVersionOrThrow(opCtx);
 }
 
 bool AutoGetDb::canSkipRSTLLock(const NamespaceStringOrUUID& nsOrUUID) {
@@ -221,7 +221,8 @@ Database* AutoGetDb::ensureDbExists(OperationContext* opCtx) {
 
     auto databaseHolder = DatabaseHolder::get(opCtx);
     _db = databaseHolder->openDb(opCtx, _dbName, nullptr);
-    DatabaseShardingState::assertMatchingDbVersion(opCtx, _dbName);
+
+    DatabaseShardingState::acquire(opCtx, _dbName)->checkDbVersionOrThrow(opCtx);
 
     return _db;
 }
@@ -230,7 +231,8 @@ Database* AutoGetDb::refreshDbReferenceIfNull(OperationContext* opCtx) {
     if (!_db) {
         auto databaseHolder = DatabaseHolder::get(opCtx);
         _db = databaseHolder->getDb(opCtx, _dbName);
-        DatabaseShardingState::assertMatchingDbVersion(opCtx, _dbName);
+
+        DatabaseShardingState::acquire(opCtx, _dbName)->checkDbVersionOrThrow(opCtx);
     }
     return _db;
 }
@@ -629,7 +631,8 @@ LockMode fixLockModeForSystemDotViewsChanges(const NamespaceString& nss, LockMod
 
 ReadSourceScope::ReadSourceScope(OperationContext* opCtx,
                                  RecoveryUnit::ReadSource readSource,
-                                 boost::optional<Timestamp> provided)
+                                 boost::optional<Timestamp> provided,
+                                 bool waitForOplog)
     : _opCtx(opCtx),
       _originalReadSource(shard_role_details::getRecoveryUnit(opCtx)->getTimestampReadSource()) {
     // Abandoning the snapshot is unsafe when the snapshot is managed by a lock free read
@@ -642,6 +645,14 @@ ReadSourceScope::ReadSourceScope(OperationContext* opCtx,
     }
 
     shard_role_details::getRecoveryUnit(_opCtx)->abandonSnapshot();
+
+    // Wait for oplog visibility if the caller requested it.
+    if (waitForOplog) {
+        auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
+        LocalOplogInfo* oplogInfo = LocalOplogInfo::get(opCtx);
+        tassert(9478700, "Should have oplog avaiable at this point", oplogInfo);
+        storageEngine->waitForAllEarlierOplogWritesToBeVisible(opCtx, oplogInfo->getRecordStore());
+    }
     shard_role_details::getRecoveryUnit(_opCtx)->setTimestampReadSource(readSource, provided);
 }
 

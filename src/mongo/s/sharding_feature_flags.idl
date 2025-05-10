@@ -144,6 +144,14 @@ feature_flags:
         default: true
         version: 8.1
         shouldBeFCVGated: true
+    # TODO (SERVER-104762): remove once 9.0 becomes last LTS.
+    featureFlagDatabaseDualCatalogCache:
+        description:
+            "Feature flag to enable one catalog cache for the shard role and another one for
+            the router role, only for database metadata usages."
+        cpp_varname: feature_flags::gDatabaseDualCatalogCache
+        default: true
+        shouldBeFCVGated: false
     # TODO (SERVER-97261): remove once 9.0 becomes last LTS.
     featureFlagDualCatalogCache:
         description:
@@ -207,6 +215,14 @@ feature_flags:
         default: true
         version: 8.2
         shouldBeFCVGated: true
+        enable_on_transitional_fcv: true
+    # TODO (SERVER-104536): remove this feature flag once 9.0 becomes LTS.
+    featureFlagCheckRangeDeletionsWithMissingShardKeyIndex:
+        description: "Feature flag to enable detecting an inconsistency when a collection has an outstanding range deletion without a supporting shard key index during CheckMetadataConsistency."
+        cpp_varname: feature_flags::gCheckRangeDeletionsWithMissingShardKeyIndex
+        default: true
+        version: 8.2
+        shouldBeFCVGated: true
     # TODO (SERVER-103838): remove feature once 9.0 becomes LTS.
     featureFlagPersistRecipientPlacementInfoInMigrationRecoveryDoc:
         description:
@@ -216,4 +232,21 @@ feature_flags:
         cpp_varname: feature_flags::gPersistRecipientPlacementInfoInMigrationRecoveryDoc
         default: true
         version: 8.2
+        shouldBeFCVGated: true
+    # TODO (SERVER-103458): remove feature once 9.0 becomes LTS.
+    featureFlagCheckInvalidDatabaseInGlobalCatalog:
+        description:
+            "When enabled, metadata consistency check will ensure that there aren't any unexpected databases
+            in the global catalog."
+        cpp_varname: feature_flags::gCheckInvalidDatabaseInGlobalCatalog
+        default: false
+        shouldBeFCVGated: true
+    # TODO (SERVER-104298): remove feature flag once 9.0 becomes last LTS.
+    featureFlagUseTwoStepRSToShardPromotion:
+        description:
+            "When enabled, promoting a replica set to a sharded cluster will take the new, two-step
+            path passing through a transitional phase where both direct and mongoS connections can
+            be used correctly."
+        cpp_varname: feature_flags::gUseTwoStepRSToShardPromotion
+        default: false
         shouldBeFCVGated: true

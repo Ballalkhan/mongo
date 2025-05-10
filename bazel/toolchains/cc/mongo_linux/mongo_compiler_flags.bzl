@@ -32,13 +32,6 @@ IMPLICIT_FALLTHROUGH_COPTS = select({
     "//conditions:default": [],
 })
 
-LIBCXX_COPTS = select({
-    "//bazel/config:use_libcxx_required_settings": ["-stdlib=libc++"],
-    "//bazel/config:use_libcxx_disabled": [],
-}, no_match_error = LIBCXX_ERROR_MESSAGE)
-
-LIBCXX_LINKFLAGS = LIBCXX_COPTS
-
 # -fno-omit-frame-pointer should be added if any sanitizer flag is used by user
 ANY_SANITIZER_AVAILABLE_COPTS = select({
     "//bazel/config:any_sanitizer_required_setting": [
@@ -293,12 +286,17 @@ THIN_LTO_FLAGS = select({
 
 SYMBOL_ORDER_COPTS = select({
     "//bazel/config:symbol_ordering_file_enabled": ["-ffunction-sections"],
+    "//bazel/config:symbol_ordering_file_enabled_al2023": ["-ffunction-sections"],
     "//conditions:default": [],
 })
 
 SYMBOL_ORDER_LINKFLAGS = select({
     "//bazel/config:symbol_ordering_file_enabled": [
-        "-Wl,--symbol-ordering-file=$(location //:symbols.orderfile)",
+        "-Wl,--symbol-ordering-file=$(location //buildscripts:symbols.orderfile)",
+        "-Wl,--no-warn-symbol-ordering",
+    ],
+    "//bazel/config:symbol_ordering_file_enabled_al2023": [
+        "-Wl,--symbol-ordering-file=$(location //buildscripts:symbols-al2023.orderfile)",
         "-Wl,--no-warn-symbol-ordering",
     ],
     "//conditions:default": [],
@@ -311,10 +309,16 @@ SHARED_ARCHIVE_COPTS = select({
     "//conditions:default": [],
 })
 
-SHARED_ARCHIVE_LINKFLAGS = select({
+SHARED_ARCHIVE_LINKFLAGS_GNU_UNIQUE = select({
+    "//bazel/config:shared_archive_enabled_gcc_not_mold": [
+        "-Wl,--no-gnu-unique",
+    ],
+    "//conditions:default": [],
+})
+
+SHARED_ARCHIVE_LINKFLAGS_B_SYMBOLIC = select({
     "//bazel/config:shared_archive_enabled_gcc": [
         "-Wl,-Bsymbolic",
-        "-Wl,--no-gnu-unique",
     ],
     "//conditions:default": [],
 })
@@ -351,7 +355,6 @@ MONGO_GLOBAL_INCLUDE_DIRECTORIES = [
 
 MONGO_LINUX_CC_COPTS = (
     MONGO_GLOBAL_INCLUDE_DIRECTORIES +
-    LIBCXX_COPTS +
     ADDRESS_SANITIZER_COPTS +
     MEMORY_SANITIZER_COPTS +
     FUZZER_SANITIZER_COPTS +
@@ -377,7 +380,6 @@ MONGO_LINUX_CC_LINKFLAGS = (
     FUZZER_SANITIZER_LINKFLAGS +
     UNDEFINED_SANITIZER_LINKFLAGS +
     THREAD_SANITIZER_LINKFLAGS +
-    LIBCXX_LINKFLAGS +
     DETECT_ODR_VIOLATIONS_LINKFLAGS +
     BIND_AT_LOAD_LINKFLAGS +
     ANY_SANITIZER_AVAILABLE_LINKFLAGS +
@@ -389,6 +391,7 @@ MONGO_LINUX_CC_LINKFLAGS = (
     COVERAGE_FLAGS +
     PGO_PROFILE_FLAGS +
     SANITIZE_WITHOUT_TSAN_LINKFLAGS +
-    SHARED_ARCHIVE_LINKFLAGS +
+    SHARED_ARCHIVE_LINKFLAGS_GNU_UNIQUE +
+    SHARED_ARCHIVE_LINKFLAGS_B_SYMBOLIC +
     LIBGCC_LINKFLAGS
 )

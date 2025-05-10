@@ -5840,7 +5840,7 @@ export const authCommandsLib = {
         },
         {
           testname: "d_moveRange",
-          command: {_shardsvrMoveRange: "test.x", fromShard: "a", toShard: "b", min: {}, max: {}, maxChunkSizeBytes: 1024},
+          command: {_shardsvrMoveRange: "test.x", fromShard: "a", toShard: "b", min: {}, max: {}, maxChunkSizeBytes: 1024, collectionTimestamp: Timestamp(1, 0)},
           skipSharded: true,
           testcases: [
               {
@@ -7354,31 +7354,6 @@ export const authCommandsLib = {
           ]
         },
         {
-          testname: "aggregate_operation_metrics",
-          command: {
-              aggregate: 1,
-              pipeline: [{$operationMetrics: {}}],
-              cursor: {}
-          },
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles: roles_monitoring,
-                privileges: [
-                    {resource: {cluster: true}, actions: ["operationMetrics"]},
-                ],
-              },
-              {
-                runOnDb: firstDbName,
-                roles: roles_monitoring,
-                privileges: [
-                    {resource: {cluster: true}, actions: ["operationMetrics"]},
-                ],
-                expectFail: true,
-              },
-            ]
-        },
-        {
           testname: "aggregate_$_internalUnpackBucket",
           command: {
               aggregate: "foo",
@@ -7505,6 +7480,25 @@ export const authCommandsLib = {
           command: {
               aggregate: 1,
               pipeline: [{$_internalChangeStreamCheckResumability: {}}],
+              cursor: {}
+          },
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: {__system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: ""}, actions: ["find"]},
+                    {resource: {cluster: true}, actions: ["internal"]}
+                ],
+                expectFail: true,
+              },
+            ]
+        },
+        {
+          testname: "aggregate_$_internalChangeStreamInjectControlEvents",
+          command: {
+              aggregate: 1,
+              pipeline: [{$_internalChangeStreamInjectControlEvents: {}}],
               cursor: {}
           },
           testcases: [

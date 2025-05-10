@@ -163,7 +163,7 @@ void assertTimeseriesBucketsCollection(const Collection* bucketsColl) {
 }
 
 std::vector<std::reference_wrapper<std::shared_ptr<timeseries::bucket_catalog::WriteBatch>>>
-determineBatchesToCommit(TimeseriesWriteBatches& batches) {
+determineBatchesToCommit(bucket_catalog::TimeseriesWriteBatches& batches) {
     stdx::unordered_set<bucket_catalog::WriteBatch*> processedBatches;
     std::vector<std::reference_wrapper<std::shared_ptr<timeseries::bucket_catalog::WriteBatch>>>
         batchesToCommit;
@@ -183,7 +183,7 @@ determineBatchesToCommit(TimeseriesWriteBatches& batches) {
     return batchesToCommit;
 }
 
-void sortBatchesToCommit(TimeseriesWriteBatches& batches) {
+void sortBatchesToCommit(bucket_catalog::TimeseriesWriteBatches& batches) {
     std::sort(batches.begin(), batches.end(), [](auto left, auto right) {
         return left.get()->bucketId.oid < right.get()->bucketId.oid;
     });
@@ -223,53 +223,6 @@ void getOpTimeAndElectionId(OperationContext* opCtx,
         ? boost::make_optional(repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp())
         : boost::none;
     *electionId = isReplSet ? boost::make_optional(replCoord->getElectionId()) : boost::none;
-}
-
-/**
- * Attempts to insert a measurement doc into a bucket in the bucket catalog.
- * Returns the write batch of the insert and other information if succeeded.
- */
-StatusWith<bucket_catalog::InsertResult> attemptInsertIntoBucket(
-    OperationContext* opCtx,
-    bucket_catalog::BucketCatalog& bucketCatalog,
-    const Collection* bucketsColl,
-    TimeseriesOptions& timeSeriesOptions,
-    const BSONObj& measurementDoc) {
-    auto insertContextAndDate = bucket_catalog::prepareInsert(
-        bucketCatalog, bucketsColl->uuid(), timeSeriesOptions, measurementDoc);
-
-    if (!insertContextAndDate.isOK()) {
-        return insertContextAndDate.getStatus();
-    }
-
-    return bucket_catalog::insert(
-        bucketCatalog,
-        bucketsColl->getDefaultCollator(),
-        measurementDoc,
-        opCtx->getOpID(),
-        std::get<bucket_catalog::InsertContext>(insertContextAndDate.getValue()),
-        std::get<Date_t>(insertContextAndDate.getValue()),
-        getStorageCacheSizeBytes(opCtx));
-}
-
-TimeseriesWriteBatches insertIntoBucketCatalogForUpdate(
-    OperationContext* opCtx,
-    bucket_catalog::BucketCatalog& bucketCatalog,
-    const CollectionPtr& bucketsColl,
-    const std::vector<BSONObj>& measurements,
-    const NamespaceString& bucketsNs,
-    TimeseriesOptions& timeSeriesOptions) {
-    TimeseriesWriteBatches batches;
-
-    for (const auto& measurement : measurements) {
-        auto result = uassertStatusOK(attemptInsertIntoBucket(
-            opCtx, bucketCatalog, bucketsColl.get(), timeSeriesOptions, measurement));
-        auto* insertResult = get_if<bucket_catalog::SuccessfulInsertion>(&result);
-        invariant(insertResult);
-        batches.emplace_back(std::move(insertResult->batch));
-    }
-
-    return batches;
 }
 
 void performAtomicWrites(
@@ -353,7 +306,7 @@ void commitTimeseriesBucketsAtomically(
     const RecordId& recordId,
     const boost::optional<std::variant<write_ops::UpdateCommandRequest,
                                        write_ops::DeleteCommandRequest>>& modificationOp,
-    TimeseriesWriteBatches* batches,
+    bucket_catalog::TimeseriesWriteBatches* batches,
     const NamespaceString& bucketsNs,
     bool fromMigrate,
     StmtId stmtId,
@@ -378,7 +331,6 @@ void commitTimeseriesBucketsAtomically(
         auto& mainBucketCatalog =
             bucket_catalog::GlobalBucketCatalog::get(opCtx->getServiceContext());
         for (auto batch : batchesToCommit) {
-            auto metadata = getMetadata(sideBucketCatalog, batch.get()->bucketId);
             auto prepareCommitStatus =
                 prepareCommit(sideBucketCatalog, batch, coll->getDefaultCollator());
             if (!prepareCommitStatus.isOK()) {
@@ -386,9 +338,8 @@ void commitTimeseriesBucketsAtomically(
                 return;
             }
 
-            TimeseriesStmtIds emptyStmtIds = {};
-            write_ops_utils::makeWriteRequest(
-                opCtx, batch, metadata, emptyStmtIds, bucketsNs, &insertOps, &updateOps);
+            write_ops_utils::makeWriteRequestFromBatch(
+                opCtx, batch, bucketsNs, &insertOps, &updateOps);
 
             // Starts tracking the newly inserted bucket in the main bucket catalog as a direct
             // write to prevent other writers from modifying it.
@@ -437,9 +388,28 @@ void performAtomicWritesForUpdate(
     StmtId stmtId,
     std::set<bucket_catalog::BucketId>* bucketIds,
     const boost::optional<Date_t> currentMinTime) {
-    auto timeSeriesOptions = *coll->getTimeseriesOptions();
-    auto batches = insertIntoBucketCatalogForUpdate(
-        opCtx, sideBucketCatalog, coll, modifiedMeasurements, coll->ns(), timeSeriesOptions);
+    auto timeseriesOptions = *coll->getTimeseriesOptions();
+    auto storageCacheSizeBytes = getStorageCacheSizeBytes(opCtx);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    auto swWriteBatches =
+        bucket_catalog::prepareInsertsToBuckets(opCtx,
+                                                sideBucketCatalog,
+                                                coll.get(),
+                                                timeseriesOptions,
+                                                opCtx->getOpID(),
+                                                coll->getDefaultCollator(),
+                                                storageCacheSizeBytes,
+                                                /*earlyReturnOnError=*/true,
+                                                /*compressAndWriteBucketFunc=*/nullptr,
+                                                modifiedMeasurements,
+                                                0,
+                                                modifiedMeasurements.size(),
+                                                {},
+                                                errorsAndIndices);
+    uassertStatusOK(swWriteBatches);
+
+    auto& batches = swWriteBatches.getValue();
 
     auto modificationRequest = unchangedMeasurements
         ? boost::make_optional(write_ops_utils::makeModificationOp(

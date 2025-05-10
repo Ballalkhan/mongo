@@ -37,7 +37,6 @@
 #include "mongo/db/s/resharding/resharding_coordinator_observer.h"
 #include "mongo/db/s/resharding/resharding_coordinator_service.h"
 #include "mongo/db/s/resharding/resharding_coordinator_service_external_state.h"
-#include "mongo/db/s/resharding/resharding_coordinator_service_util.h"
 #include "mongo/db/s/resharding/resharding_future_util.h"
 #include "mongo/db/s/resharding/resharding_server_parameters_gen.h"
 #include "mongo/db/s/resharding/resharding_util.h"
@@ -367,7 +366,6 @@ ExecutorFuture<ReshardingCoordinatorDocument> ReshardingCoordinator::_runUntilRe
                    .then([this, executor] {
                        if (_coordinatorDoc.getState() == CoordinatorStateEnum::kBlockingWrites) {
                            _tellAllDonorsToRefresh(executor);
-                           _tellAllRecipientsToRefresh(executor);
                        }
                    })
                    .then([this, executor] {
@@ -1033,10 +1031,20 @@ ExecutorFuture<void> ReshardingCoordinator::_awaitAllDonorsReadyToDonate(
                 auto opCtx = _cancelableOpCtxFactory->makeOperationContext(&cc());
                 return computeApproxCopySize(opCtx.get(), coordinatorDocChangedOnDisk);
             }();
-            _updateCoordinatorDocStateAndCatalogEntries(CoordinatorStateEnum::kCloning,
-                                                        coordinatorDocChangedOnDisk,
-                                                        highestMinFetchTimestamp,
-                                                        approxCopySize);
+
+            _updateCoordinatorDocStateAndCatalogEntries(
+                [=, this](OperationContext* opCtx, resharding::DaoStorageClient* client) {
+                    auto now = resharding::getCurrentTime();
+                    auto updatedDocument = _coordinatorDao.transitionToCloningPhase(
+                        opCtx,
+                        client,
+                        now,
+                        highestMinFetchTimestamp,
+                        approxCopySize,
+                        _coordinatorDoc.getReshardingUUID());
+                    _metrics->setStartFor(ReshardingMetrics::TimedPhase::kCloning, now);
+                    return updatedDocument;
+                });
         })
         .then([this] {
             return resharding::waitForMajority(_ctHolder->getAbortToken(),
@@ -1583,10 +1591,21 @@ void ReshardingCoordinator::_updateCoordinatorDocStateAndCatalogEntries(
 
     auto opCtx = _cancelableOpCtxFactory->makeOperationContext(&cc());
     resharding::writeStateTransitionAndCatalogUpdatesThenBumpCollectionPlacementVersions(
-        opCtx.get(), _metrics.get(), updatedCoordinatorDoc);
+        opCtx.get(), _metrics.get(), updatedCoordinatorDoc, boost::none);
 
     // Update in-memory coordinator doc
-    installCoordinatorDocOnStateTransition(opCtx.get(), updatedCoordinatorDoc);
+    installCoordinatorDocOnStateTransition(opCtx.get(), resharding::getCoordinatorDoc(opCtx.get(), _coordinatorDoc.getReshardingUUID()));
+}
+
+void ReshardingCoordinator::_updateCoordinatorDocStateAndCatalogEntries(
+    resharding::PhaseTransitionFn phaseTransitionFn) {
+    auto opCtx = _cancelableOpCtxFactory->makeOperationContext(&cc());
+    resharding::writeStateTransitionAndCatalogUpdatesThenBumpCollectionPlacementVersions(
+        opCtx.get(), _metrics.get(), _coordinatorDoc, std::move(phaseTransitionFn));
+
+    installCoordinatorDocOnStateTransition(
+        opCtx.get(),
+        resharding::getCoordinatorDoc(opCtx.get(), _coordinatorDoc.getReshardingUUID()));
 }
 
 void ReshardingCoordinator::_removeOrQuiesceCoordinatorDocAndRemoveReshardingFields(
@@ -1975,6 +1994,7 @@ void ReshardingCoordinator::_logStatsOnCompletion(bool success) {
     totalsBuilder.append("totalOplogsApplied", totalOplogsApplied);
     totalsBuilder.append("maxDonorIndexes", maxDonorIndexes);
     totalsBuilder.append("maxRecipientIndexes", maxRecipientIndexes);
+    totalsBuilder.append("numberOfIndexesDelta", maxRecipientIndexes - maxDonorIndexes);
     statsBuilder.append("totals", totalsBuilder.obj());
 
     bool hadCriticalSection = false;

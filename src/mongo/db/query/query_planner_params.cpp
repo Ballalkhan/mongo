@@ -441,10 +441,12 @@ void QueryPlannerParams::applyQuerySettingsOrIndexFiltersForMainCollection(
 void QueryPlannerParams::fillOutSecondaryCollectionsPlannerParams(
     OperationContext* opCtx,
     const CanonicalQuery& canonicalQuery,
-    const MultipleCollectionAccessor& collections) {
-    if (canonicalQuery.cqPipeline().empty()) {
+    const MultipleCollectionAccessor& collections,
+    bool checkPipelineExistence) {
+    if (checkPipelineExistence && canonicalQuery.cqPipeline().empty()) {
         return;
     }
+
     auto fillOutSecondaryInfo = [&](const NamespaceString& nss,
                                     const CollectionPtr& secondaryColl) {
         CollectionInfo secondaryInfo;
@@ -490,7 +492,8 @@ void QueryPlannerParams::fillOutSecondaryCollectionsPlannerParams(
 void QueryPlannerParams::fillOutMainCollectionPlannerParams(
     OperationContext* opCtx,
     const CanonicalQuery& canonicalQuery,
-    const MultipleCollectionAccessor& collections) {
+    const MultipleCollectionAccessor& collections,
+    QueryPlanRankerModeEnum planRankerMode) {
     const auto& mainColl = collections.getMainCollection();
     // We will not output collection scans unless there are no indexed solutions. NO_TABLE_SCAN
     // overrides this behavior by not outputting a collscan even if there are no indexed
@@ -526,8 +529,7 @@ void QueryPlannerParams::fillOutMainCollectionPlannerParams(
     // appear to be ID-hack eligible as per 'isIdHackEligibleQuery()', but 'buildIdHackPlan()' fails
     // as there is no _id index. In these cases, we will end up invoking the query planner and CBR,
     // so we need this catalog information.
-    if (canonicalQuery.getExpCtx()->getQueryKnobConfiguration().getPlanRankerMode() !=
-        QueryPlanRankerModeEnum::kMultiPlanning) {
+    if (planRankerMode != QueryPlanRankerModeEnum::kMultiPlanning) {
         mainCollectionInfo.collStats = std::make_unique<stats::CollectionStatisticsImpl>(
             static_cast<double>(mainColl->getRecordStore()->numRecords()), canonicalQuery.nss());
     }
@@ -692,8 +694,9 @@ bool shouldWaitForOplogVisibility(OperationContext* opCtx,
     // visibility timestamp to be updated, it would wait for a replication batch that would never
     // complete because it couldn't reacquire its own lock, the global lock held by the waiting
     // reader.
-    return repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesForDatabase(
-        opCtx, DatabaseName::kAdmin);
+    auto* replCoord = repl::ReplicationCoordinator::get(opCtx);
+    return replCoord->canAcceptWritesForDatabase(opCtx, DatabaseName::kAdmin) &&
+        replCoord->getSettings().isReplSet();
 }
 
 }  // namespace mongo

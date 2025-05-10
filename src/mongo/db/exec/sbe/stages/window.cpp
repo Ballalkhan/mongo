@@ -27,7 +27,6 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
 
 #include "mongo/db/exec/sbe/stages/window.h"
 
@@ -841,7 +840,6 @@ std::unique_ptr<PlanStageStats> WindowStage::getStats(bool includeDebugInfo) con
     ret->specific = std::make_unique<WindowStats>(_specificStats);
 
     if (includeDebugInfo) {
-        DebugPrinter printer;
         BSONObjBuilder bob;
         // Spilling stats.
         bob.appendBool("usedDisk", _specificStats.usedDisk);

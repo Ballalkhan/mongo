@@ -247,8 +247,6 @@ public:
 
     void startOplogApplication() override {};
 
-    void onEnteringCriticalSection() override {};
-
     SharedSemiFuture<void> awaitCloningDone() override {
         return makeReadyFutureWith([] {}).share();
     };
@@ -784,6 +782,22 @@ protected:
                     opCtx, testOptions, testMetricsForDonor, metadata, metrics);
             }
         }
+    }
+
+    ChangeStreamsMonitorContext createChangeStreamsMonitorContext(OperationContext* opCtx) {
+        // Perform an insert to ensure the change streams monitor has a valid startAt timestamp.
+        auto testNss = NamespaceString::createNamespaceString_forTest("testDb", "testColl");
+        resharding::data_copy::ensureCollectionExists(opCtx, testNss, CollectionOptions());
+        insertDocuments(opCtx, testNss, {makeTestDocumentForInsert(0)});
+
+        WriteUnitOfWork wuow(opCtx);
+        auto ts = repl::getNextOpTime(opCtx).getTimestamp();
+        wuow.commit();
+
+        ChangeStreamsMonitorContext changeStreams;
+        changeStreams.setStartAtOperationTime(ts - 1);
+        changeStreams.setDocumentsDelta(0);
+        return changeStreams;
     }
 
     int64_t getExpectedDocumentsDelta() {
@@ -2050,15 +2064,7 @@ TEST_F(ReshardingRecipientServiceTest, RestoreMetricsAfterStepUpWithMissingProgr
         doc.setCommonReshardingMetadata(metadata);
 
         if (testOptions.performVerification) {
-            ChangeStreamsMonitorContext changeStreams;
-
-            WriteUnitOfWork wuow(opCtx.get());
-            auto ts = repl::getNextOpTime(opCtx.get()).getTimestamp();
-            wuow.commit();
-
-            changeStreams.setStartAtOperationTime(ts - 1);
-            changeStreams.setDocumentsDelta(0);
-            doc.setChangeStreamsMonitor(changeStreams);
+            doc.setChangeStreamsMonitor(createChangeStreamsMonitorContext(opCtx.get()));
         }
 
         createTempReshardingCollection(opCtx.get(), doc);
@@ -2088,14 +2094,7 @@ TEST_F(ReshardingRecipientServiceTest, AbortWhileChangeStreamsMonitorInProgress)
     doc.setMutableState(mutableState);
     doc.setCloneTimestamp(Timestamp{10, 0});
     doc.setStartConfigTxnCloneTime(Date_t::now());
-
-    ChangeStreamsMonitorContext changeStreams;
-    WriteUnitOfWork wuow(opCtx.get());
-    auto ts = repl::getNextOpTime(opCtx.get()).getTimestamp();
-    wuow.commit();
-    changeStreams.setStartAtOperationTime(ts - 1);
-    changeStreams.setDocumentsDelta(0);
-    doc.setChangeStreamsMonitor(changeStreams);
+    doc.setChangeStreamsMonitor(createChangeStreamsMonitorContext(opCtx.get()));
 
     createTempReshardingCollection(opCtx.get(), doc);
     RecipientStateMachine::insertStateDocument(opCtx.get(), doc);

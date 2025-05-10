@@ -8,14 +8,14 @@
  *   requires_sharding,
  *   requires_spawning_own_processes,
  *   requires_profiling,
- *    # TODO (SERVER-97257): Re-enable this test or add an explanation why it is incompatible.
- *    embedded_router_incompatible,
  *   requires_fcv_80,
  *   # TODO (SERVER-89166) Remove the multiversion_incompatible once the bug is fixed
  *   # Old binary version nodes are started up with different parameters than the new binary nodes,
  *   # and this throws off the assumptions the test makes about SBE pushdown being enabled on all
  *   # nodes
  *   multiversion_incompatible,
+ *   # During fcv upgrade/downgrade the engine might not be what we expect.
+ *   cannot_run_during_upgrade_downgrade,
  * ]
  */
 
@@ -774,7 +774,7 @@ shardTargetingTest.assertShardTargeting({
 });
 
 // Make sure the shard that is going to execute the nested $lookup has up-to-date routing info.
-db.getCollection(kShardedColl1Name).aggregate([ 
+db.getCollection(kShardedColl1Name).aggregate([
     {$lookup: {from: kShardedColl2Name, as: "out", pipeline: [
         {$lookup: {from: kUnsplittable1CollName, as: "out", pipeline: []}},
     ]}}

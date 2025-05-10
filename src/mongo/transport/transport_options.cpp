@@ -43,10 +43,12 @@
 
 namespace mongo::transport {
 namespace {
-auto parseMaxIncomingConnectionsParameters(const BSONObj& obj) {
-    IDLParserContext ctx("maxIncomingConnections");
-    const auto params = MaxIncomingConnectionsParameters::parse(ctx, obj);
-    std::vector<std::variant<CIDR, std::string>> output;
+using ConnectionList = std::vector<std::variant<CIDR, std::string>>;
+
+auto parseConnectionListParameters(const BSONObj& obj) {
+    IDLParserContext ctx("maxConnectionsOverride");
+    const auto params = ConnectionListParameters::parse(ctx, obj);
+    ConnectionList output;
     for (const auto& range : params.getRanges()) {
         auto swr = CIDR::parse(range);
         if (!swr.isOK()) {
@@ -58,20 +60,12 @@ auto parseMaxIncomingConnectionsParameters(const BSONObj& obj) {
     return output;
 }
 
-void updateMaxIncomingConnectionsOverride(BSONObj obj) {
-    auto maxConnsOverride = parseMaxIncomingConnectionsParameters(obj);
-    serverGlobalParams.maxConnsOverride.update(
-        std::make_shared<decltype(maxConnsOverride)>(std::move(maxConnsOverride)));
-}
-}  // namespace
-
-void MaxIncomingConnectionsOverrideServerParameter::append(OperationContext*,
-                                                           BSONObjBuilder* bob,
-                                                           StringData name,
-                                                           const boost::optional<TenantId>&) {
+void appendParameter(VersionedValue<ConnectionList>* value, BSONObjBuilder* bob, StringData name) {
     BSONObjBuilder subBob(bob->subobjStart(name));
     BSONArrayBuilder subArray(subBob.subarrayStart("ranges"_sd));
-    auto snapshot = serverGlobalParams.maxConnsOverride.makeSnapshot();
+
+    invariant(value);
+    auto snapshot = value->makeSnapshot();
     if (!snapshot)
         return;
 
@@ -84,20 +78,187 @@ void MaxIncomingConnectionsOverrideServerParameter::append(OperationContext*,
     }
 }
 
-Status MaxIncomingConnectionsOverrideServerParameter::set(const BSONElement& value,
-                                                          const boost::optional<TenantId>&) try {
-    updateMaxIncomingConnectionsOverride(value.Obj());
+Status setParameter(VersionedValue<ConnectionList>* value, BSONObj obj) try {
+    invariant(value);
+    auto list = parseConnectionListParameters(obj);
+    value->update(std::make_shared<ConnectionList>(std::move(list)));
     return Status::OK();
 } catch (const AssertionException& e) {
     return e.toStatus();
 }
 
+}  // namespace
+
+void MaxIncomingConnectionsOverrideServerParameter::append(OperationContext*,
+                                                           BSONObjBuilder* bob,
+                                                           StringData name,
+                                                           const boost::optional<TenantId>&) {
+    appendParameter(&serverGlobalParams.maxIncomingConnsOverride, bob, name);
+}
+
+Status MaxIncomingConnectionsOverrideServerParameter::set(const BSONElement& value,
+                                                          const boost::optional<TenantId>&) {
+    return setParameter(&serverGlobalParams.maxIncomingConnsOverride, value.Obj());
+}
+
 Status MaxIncomingConnectionsOverrideServerParameter::setFromString(
-    StringData str, const boost::optional<TenantId>&) try {
-    updateMaxIncomingConnectionsOverride(fromjson(str));
+    StringData str, const boost::optional<TenantId>&) {
+    return setParameter(&serverGlobalParams.maxIncomingConnsOverride, fromjson(str));
+}
+
+void MaxEstablishingConnectionsOverrideServerParameter::append(OperationContext*,
+                                                               BSONObjBuilder* bob,
+                                                               StringData name,
+                                                               const boost::optional<TenantId>&) {
+    appendParameter(&serverGlobalParams.maxEstablishingConnsOverride, bob, name);
+}
+
+Status MaxEstablishingConnectionsOverrideServerParameter::set(const BSONElement& value,
+                                                              const boost::optional<TenantId>&) {
+    return setParameter(&serverGlobalParams.maxEstablishingConnsOverride, value.Obj());
+}
+
+Status MaxEstablishingConnectionsOverrideServerParameter::setFromString(
+    StringData str, const boost::optional<TenantId>&) {
+    return setParameter(&serverGlobalParams.maxEstablishingConnsOverride, fromjson(str));
+}
+
+void IngressConnectionEstablishmentRatePerSecServerParameter::append(
+    OperationContext*, BSONObjBuilder* bob, StringData name, const boost::optional<TenantId>&) {
+    bob->append(name, _data);
+}
+
+Status IngressConnectionEstablishmentRatePerSecServerParameter::set(
+    const BSONElement& value, const boost::optional<TenantId>&) {
+    double newValue;
+    Status coercionStatus = value.tryCoerce(&newValue);
+    if (!coercionStatus.isOK() || newValue < 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream()
+                          << "Invalid value for ingressConnectionEstablishmentRatePerSec: "
+                          << value);
+    }
+
+    _data = newValue;
+
+    // TODO SERVER-104415 Set value on RateLimiter
+
     return Status::OK();
-} catch (const AssertionException& e) {
-    return e.toStatus();
+}
+
+Status IngressConnectionEstablishmentRatePerSecServerParameter::setFromString(
+    StringData str, const boost::optional<TenantId>&) {
+    double newValue;
+    Status status = NumberParser{}(str, &newValue);
+    if (!status.isOK()) {
+        return status;
+    }
+    if (newValue < 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream()
+                          << "Invalid value for ingressConnectionEstablishmentRatePerSec: "
+                          << newValue);
+    }
+
+    _data = newValue;
+
+    // TODO SERVER-104415 Set value on RateLimiter
+
+    return Status::OK();
+}
+
+void IngressConnectionEstablishmentBurstSizeServerParameter::append(
+    OperationContext*, BSONObjBuilder* bob, StringData name, const boost::optional<TenantId>&) {
+    bob->append(name, _data);
+}
+
+Status IngressConnectionEstablishmentBurstSizeServerParameter::set(
+    const BSONElement& value, const boost::optional<TenantId>&) {
+    double newValue;
+    Status coercionStatus = value.tryCoerce(&newValue);
+    if (!coercionStatus.isOK() || newValue < 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream() << "Invalid value for ingressConnectionEstablishmentBurstSize: "
+                                    << value);
+    }
+
+    _data = newValue;
+
+    // TODO SERVER-104415 Set value on RateLimiter
+
+    return Status::OK();
+}
+
+Status IngressConnectionEstablishmentBurstSizeServerParameter::setFromString(
+    StringData str, const boost::optional<TenantId>&) {
+    double newValue;
+    Status status = NumberParser{}(str, &newValue);
+    if (!status.isOK()) {
+        return status;
+    }
+    if (newValue < 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream() << "Invalid value for ingressConnectionEstablishmentBurstSize: "
+                                    << newValue);
+    }
+
+    _data = newValue;
+
+    // TODO SERVER-104415 Set value on RateLimiter
+
+    return Status::OK();
+}
+
+void IngressConnectionEstablishmentMaxQueueDepthServerParameter::append(
+    OperationContext*, BSONObjBuilder* bob, StringData name, const boost::optional<TenantId>&) {
+    bob->append(name, _data);
+}
+
+Status IngressConnectionEstablishmentMaxQueueDepthServerParameter::set(
+    const BSONElement& value, const boost::optional<TenantId>&) {
+    if (!value.isNumber()) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream()
+                          << "Invalid type for ingressConnectionEstablishmentMaxQueueDepth: "
+                          << value);
+    }
+
+    auto valueLong = value.safeNumberLong();
+    if (valueLong < 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream()
+                          << "Invalid value for ingressConnectionEstablishmentMaxQueueDepth: "
+                          << value);
+    }
+
+    size_t newValue = valueLong;
+    _data = newValue;
+
+    // TODO SERVER-104415 Set value on RateLimiter
+
+    return Status::OK();
+}
+
+Status IngressConnectionEstablishmentMaxQueueDepthServerParameter::setFromString(
+    StringData str, const boost::optional<TenantId>&) {
+    long long valueLong;
+    Status status = NumberParser{}(str, &valueLong);
+    if (!status.isOK()) {
+        return status;
+    }
+    if (valueLong < 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream()
+                          << "Invalid value for ingressConnectionEstablishmentMaxQueueDepth: "
+                          << valueLong);
+    }
+
+    size_t newValue = valueLong;
+    _data = newValue;
+
+    // TODO SERVER-104415 Set value on RateLimiter
+
+    return Status::OK();
 }
 
 }  // namespace mongo::transport

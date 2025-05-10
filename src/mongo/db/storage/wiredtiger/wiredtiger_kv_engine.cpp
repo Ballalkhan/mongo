@@ -40,9 +40,8 @@
 
 #include <absl/container/node_hash_map.h>
 #include <boost/algorithm/string/join.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/path.hpp>
 #include <boost/none.hpp>
 #include <boost/none_t.hpp>
 #include <boost/optional.hpp>
@@ -83,7 +82,6 @@
 #include "mongo/db/storage/backup_block.h"
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/key_format.h"
-#include "mongo/db/storage/oplog_truncate_markers.h"
 #include "mongo/db/storage/snapshot_window_options_gen.h"
 #include "mongo/db/storage/storage_file_util.h"
 #include "mongo/db/storage/storage_options.h"
@@ -194,7 +192,7 @@ std::string extractIdentFromPath(const boost::filesystem::path& dbpath,
 
     // Remove the file extension and convert to generic form (i.e. replace "\" with "/"
     // on windows, no-op on unix).
-    return boost::filesystem::change_extension(identWithExtension, "").generic_string();
+    return identWithExtension.replace_extension("").generic_string();
 }
 
 bool WiredTigerFileVersion::shouldDowngrade(bool hasRecoveryTimestamp) {
@@ -624,7 +622,15 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         }
     }
 
-    _connection = std::make_unique<WiredTigerConnection>(_conn, _clockSource, this);
+    int32_t sessionCacheMax =
+        ((gWiredTigerSessionCacheMaxPercentage * wiredTigerGlobalOptions.sessionMax) / 100);
+
+    LOGV2(9086700,
+          "WiredTiger session cache max value has been set",
+          "sessionCacheMax"_attr = sessionCacheMax);
+
+    _connection =
+        std::make_unique<WiredTigerConnection>(_conn, _clockSource, sessionCacheMax, this);
 
     _sessionSweeper = std::make_unique<WiredTigerSessionSweeper>(_connection.get());
     _sessionSweeper->go();
@@ -1531,11 +1537,11 @@ void WiredTigerKVEngine::setSortedDataInterfaceExtraOptions(const std::string& o
     _indexOptions = options;
 }
 
-Status WiredTigerKVEngine::createRecordStore(const NamespaceString& nss,
-                                             StringData ident,
-                                             KeyFormat keyFormat,
-                                             bool isTimeseries,
-                                             const BSONObj& storageEngineCollectionOptions) {
+Status WiredTigerKVEngine::_createRecordStore(const NamespaceString& nss,
+                                              StringData ident,
+                                              KeyFormat keyFormat,
+                                              const BSONObj& storageEngineCollectionOptions,
+                                              boost::optional<std::string> customBlockCompressor) {
     WiredTigerSession session(_connection.get());
 
     WiredTigerRecordStoreBase::WiredTigerTableConfig wtTableConfig =
@@ -1548,11 +1554,8 @@ Status WiredTigerKVEngine::createRecordStore(const NamespaceString& nss,
     wtTableConfig.logEnabled =
         WiredTigerUtil::useTableLogging(nss, isReplSet, shouldRecoverFromOplogAsStandalone);
 
-    if (isTimeseries) {
-        // Time-series collections use zstd compression by default while all other collections use
-        // the globally configured default.
-        wtTableConfig.blockCompressor =
-            WiredTigerGlobalOptions::kDefaultTimeseriesCollectionCompressor.toString();
+    if (customBlockCompressor) {
+        wtTableConfig.blockCompressor = *customBlockCompressor;
     }
 
     auto customConfigString = WiredTigerRecordStore::parseOptionsField(
@@ -1604,9 +1607,7 @@ Status WiredTigerKVEngine::importRecordStore(StringData ident,
 
 Status WiredTigerKVEngine::recoverOrphanedIdent(const NamespaceString& nss,
                                                 StringData ident,
-                                                KeyFormat keyFormat,
-                                                bool isTimeseries,
-                                                const BSONObj& storageEngineCollectionOptions) {
+                                                const RecordStore::Options& options) {
 #ifdef _WIN32
     return {ErrorCodes::CommandNotSupported, "Orphan file recovery is not supported on Windows"};
 #else
@@ -1638,7 +1639,7 @@ Status WiredTigerKVEngine::recoverOrphanedIdent(const NamespaceString& nss,
 
     LOGV2(22333, "Creating new RecordStore", logAttrs(nss));
 
-    status = createRecordStore(nss, ident, keyFormat, isTimeseries, storageEngineCollectionOptions);
+    status = createRecordStore(nss, ident, options);
     if (!status.isOK()) {
         return status;
     }
@@ -1684,30 +1685,22 @@ Status WiredTigerKVEngine::recoverOrphanedIdent(const NamespaceString& nss,
 std::unique_ptr<RecordStore> WiredTigerKVEngine::getRecordStore(OperationContext* opCtx,
                                                                 const NamespaceString& nss,
                                                                 StringData ident,
-                                                                const CollectionOptions& options) {
+                                                                const RecordStore::Options& options,
+                                                                boost::optional<UUID> uuid) {
     std::unique_ptr<WiredTigerRecordStore> ret;
-    if (nss.isOplog()) {
+    if (options.isOplog) {
         ret = std::make_unique<WiredTigerRecordStore::Oplog>(
             this,
             WiredTigerRecoveryUnit::get(*shard_role_details::getRecoveryUnit(opCtx)),
-            WiredTigerRecordStore::Oplog::Params{.uuid = *options.uuid,
+            WiredTigerRecordStore::Oplog::Params{.uuid = *uuid,
                                                  .ident = ident.toString(),
                                                  .engineName = _canonicalName,
                                                  .inMemory = _wtConfig.inMemory,
-                                                 .oplogMaxSize = options.cappedSize,
+                                                 .oplogMaxSize = options.oplogMaxSize,
                                                  .sizeStorer = _sizeStorer.get(),
                                                  .tracksSizeAdjustments = true,
                                                  .forceUpdateWithFullDocument =
-                                                     options.timeseries.has_value()});
-
-        // If the server was started in read-only mode or if we are restoring the node, skip
-        // calculating the oplog truncate markers. The OplogCapMaintainerThread does not get started
-        // in this instance.
-        if (opCtx->getServiceContext()->userWritesAllowed() && !storageGlobalParams.repair &&
-            !repl::ReplSettings::shouldSkipOplogSampling()) {
-            static_cast<WiredTigerRecordStore::Oplog*>(ret.get())->setTruncateMarkers(
-                OplogTruncateMarkers::createOplogTruncateMarkers(opCtx, *this, *ret));
-        }
+                                                     options.forceUpdateWithFullDocument});
         getOplogManager()->stop();
         getOplogManager()->start(opCtx, *this, *ret);
     } else {
@@ -1723,21 +1716,21 @@ std::unique_ptr<RecordStore> WiredTigerKVEngine::getRecordStore(OperationContext
             return !isReplSet && !shouldRecoverFromOplogAsStandalone;
         }();
         WiredTigerRecordStore::Params params{
-            .baseParams{.uuid = options.uuid,
+            .baseParams{.uuid = uuid,
                         .ident = ident.toString(),
                         .engineName = _canonicalName,
-                        .keyFormat = options.clusteredIndex ? KeyFormat::String : KeyFormat::Long,
-                        .overwrite = !options.clusteredIndex,
+                        .keyFormat = options.keyFormat,
+                        .overwrite = options.allowOverwrite,
                         .isLogged = isLogged,
-                        .forceUpdateWithFullDocument = options.timeseries.has_value()},
+                        .forceUpdateWithFullDocument = options.forceUpdateWithFullDocument},
             // Record stores for clustered collections need to guarantee uniqueness by preventing
             // overwrites.
             .inMemory = _wtConfig.inMemory,
-            .isChangeCollection = nss.isChangeCollection(),
+            .isChangeCollection = options.isChangeCollection,
             .sizeStorer = _sizeStorer.get(),
             .tracksSizeAdjustments = true};
 
-        ret = options.capped
+        ret = options.isCapped
             ? std::make_unique<WiredTigerRecordStore::Capped>(
                   this,
                   WiredTigerRecoveryUnit::get(*shard_role_details::getRecoveryUnit(opCtx)),
@@ -2735,10 +2728,6 @@ bool WiredTigerKVEngine::supportsReadConcernSnapshot() const {
     return true;
 }
 
-bool WiredTigerKVEngine::supportsOplogTruncateMarkers() const {
-    return true;
-}
-
 Status WiredTigerKVEngine::oplogDiskLocRegister(RecoveryUnit& ru,
                                                 RecordStore* oplogRecordStore,
                                                 const Timestamp& opTime,
@@ -3072,6 +3061,13 @@ Status WiredTigerKVEngine::autoCompact(RecoveryUnit& ru, const AutoCompactOption
     return status;
 }
 
+bool WiredTigerKVEngine::hasOngoingLiveRestore() {
+    auto session = getConnection().getUninterruptibleSession();
+    auto result = WiredTigerUtil::getStatisticsValue(
+        *session, "statistics:", "statistics=(fast)", WT_STAT_CONN_LIVE_RESTORE_STATE);
+    return uassertStatusOK(result) == WT_LIVE_RESTORE_IN_PROGRESS;
+}
+
 Status WiredTigerKVEngine::_drop(WiredTigerSession& session, const char* uri, const char* config) {
     int ret = session.drop(uri, config);
 
@@ -3107,7 +3103,7 @@ Status WiredTigerKVEngine::_drop(WiredTigerSession& session, const char* uri, co
 }
 
 WiredTigerKVEngineBase::WiredTigerConfig getWiredTigerConfigFromStartupOptions(
-    bool usingTemporaryKVEngine) {
+    bool usingSpillKVEngine) {
     // TODO(SERVER-103279): Optimally configure SpillKVEngine.
     WiredTigerKVEngineBase::WiredTigerConfig wtConfig;
     wtConfig.sessionMax = wiredTigerGlobalOptions.sessionMax;
@@ -3119,12 +3115,28 @@ WiredTigerKVEngineBase::WiredTigerConfig getWiredTigerConfigFromStartupOptions(
     wtConfig.liveRestoreReadSizeMB = wiredTigerGlobalOptions.liveRestoreReadSizeMB;
     wtConfig.statisticsLogWaitSecs = wiredTigerGlobalOptions.statisticsLogDelaySecs;
     wtConfig.zstdCompressorLevel = wiredTigerGlobalOptions.zstdCompressorLevel;
-    wtConfig.extraOpenOptions = wiredTigerGlobalOptions.engineConfig;
+
+    if (!usingSpillKVEngine) {
+        // Config fuzzer tests fail for SpillKVEngine due to eviction thresholds being higher than
+        // the cache size.
+        // TODO(SERVER-103279): Fix this issue by appropriately configuring these thresholds for
+        // SpillKVEngine.
+        wtConfig.extraOpenOptions = wiredTigerGlobalOptions.engineConfig;
+
+        if (wtConfig.extraOpenOptions.find("session_max=") != std::string::npos) {
+            LOGV2_WARNING(
+                9086701,
+                "The session cache max is derived from the session_max value "
+                "provided as a server parameter. Please use the wiredTigerSessionMax server "
+                "parameter to set this value.");
+        }
+    }
+
     return wtConfig;
 }
 
 WiredTigerRecordStoreBase::WiredTigerTableConfig getWiredTigerTableConfigFromStartupOptions(
-    bool usingTemporaryKVEngine) {
+    bool usingSpillKVEngine) {
     // TODO(SERVER-103279): Optimally configure SpillRecordStore.
     WiredTigerRecordStoreBase::WiredTigerTableConfig wtTableConfig;
     wtTableConfig.blockCompressor = wiredTigerGlobalOptions.collectionBlockCompressor;

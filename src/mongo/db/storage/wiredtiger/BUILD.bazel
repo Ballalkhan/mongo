@@ -109,12 +109,10 @@ mongo_cc_library(
         "//src/mongo/db:shard_role_api",
         "//src/mongo/db/concurrency:exception_util",
         "//src/mongo/db/repl:repl_settings",
-        "//src/mongo/db/stats:resource_consumption_metrics",
         "//src/mongo/db/storage:backup_block",
         "//src/mongo/db/storage:capped_snapshots",
         "//src/mongo/db/storage:execution_context",
         "//src/mongo/db/storage:index_entry_comparison",
-        "//src/mongo/db/storage:oplog_truncate_markers",
         "//src/mongo/db/storage:prepare_conflict_tracker",
         "//src/mongo/db/storage:record_store_base",
         "//src/mongo/db/storage:recovery_unit_base",
@@ -205,7 +203,10 @@ mongo_cc_unit_test(
         "//src/mongo/util:executor_test_util.h",
         "//src/mongo/util:future_test_utils.h",
     ],
-    tags = ["mongo_unittest_eighth_group"],
+    tags = [
+        "mongo_unittest_eighth_group",
+        "server-storage-engine-integration",
+    ],
     deps = [
         ":storage_wiredtiger",
         ":storage_wiredtiger_core",
@@ -234,12 +235,15 @@ mongo_cc_unit_test(
         "wiredtiger_standard_index_test.cpp",
         "wiredtiger_standard_record_store_test.cpp",
     ],
-    tags = ["mongo_unittest_sixth_group"],
+    tags = [
+        "mongo_unittest_sixth_group",
+        "server-storage-engine-integration",
+    ],
     deps = [
         ":storage_wiredtiger_core",
         ":wiredtiger_index_test_harness",
         ":wiredtiger_record_store_test_harness",
-        "//src/mongo/db/storage:oplog_truncation",
+        "//src/mongo/db/storage:record_store_tests",
         "//src/mongo/db/storage:sorted_data_interface_tests",
     ],
 )

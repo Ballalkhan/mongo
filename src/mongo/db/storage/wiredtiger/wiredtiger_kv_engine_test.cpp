@@ -63,6 +63,7 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/db/transaction_resources.h"
+#include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/logv2/log.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/log_test.h"
@@ -132,7 +133,8 @@ private:
         auto client = _svcCtx->getService()->makeClient("opCtx");
         auto opCtx = client->makeOperationContext();
         StorageEngineOptions options;
-        return std::make_unique<StorageEngineImpl>(opCtx.get(), std::move(kv), options);
+        return std::make_unique<StorageEngineImpl>(
+            opCtx.get(), std::move(kv), std::unique_ptr<KVEngine>(), options);
     }
 
     ServiceContext* _svcCtx;
@@ -166,18 +168,16 @@ TEST_F(WiredTigerKVEngineRepairTest, OrphanedDataFilesCanBeRecovered) {
     auto opCtxPtr = _makeOperationContext();
     auto& ru = *shard_role_details::getRecoveryUnit(opCtxPtr.get());
 
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
     std::string ident = "collection-1234";
-    std::string record = "abcd";
-    CollectionOptions defaultCollectionOptions;
-
-    std::unique_ptr<RecordStore> rs;
-    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident));
-    rs = _helper.getWiredTigerKVEngine()->getRecordStore(
-        opCtxPtr.get(), nss, ident, defaultCollectionOptions);
+    RecordStore::Options options;
+    NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
+    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options));
+    auto rs = _helper.getWiredTigerKVEngine()->getRecordStore(
+        opCtxPtr.get(), nss, ident, options, UUID::gen());
     ASSERT(rs);
 
     RecordId loc;
+    std::string record = "abcd";
     {
         StorageWriteTransaction txn(ru);
         StatusWith<RecordId> res =
@@ -197,7 +197,7 @@ TEST_F(WiredTigerKVEngineRepairTest, OrphanedDataFilesCanBeRecovered) {
     ASSERT(!boost::filesystem::exists(tmpFile));
 
 #ifdef _WIN32
-    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident);
+    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident, options);
     ASSERT_EQ(ErrorCodes::CommandNotSupported, status.code());
 #else
 
@@ -219,7 +219,7 @@ TEST_F(WiredTigerKVEngineRepairTest, OrphanedDataFilesCanBeRecovered) {
     boost::filesystem::rename(tmpFile, *dataFilePath, err);
     ASSERT(!err) << err.message();
 
-    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident);
+    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident, options);
     ASSERT_EQ(ErrorCodes::DataModifiedByRepair, status.code());
 #endif
 }
@@ -230,16 +230,16 @@ TEST_F(WiredTigerKVEngineRepairTest, UnrecoverableOrphanedDataFilesAreRebuilt) {
 
     NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
     std::string ident = "collection-1234";
-    std::string record = "abcd";
-    CollectionOptions defaultCollectionOptions;
+    RecordStore::Options options;
+    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options));
 
-    std::unique_ptr<RecordStore> rs;
-    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident));
-    rs = _helper.getWiredTigerKVEngine()->getRecordStore(
-        opCtxPtr.get(), nss, ident, defaultCollectionOptions);
+    UUID uuid = UUID::gen();
+    auto rs =
+        _helper.getWiredTigerKVEngine()->getRecordStore(opCtxPtr.get(), nss, ident, options, uuid);
     ASSERT(rs);
 
     RecordId loc;
+    std::string record = "abcd";
     {
         StorageWriteTransaction txn(ru);
         StatusWith<RecordId> res =
@@ -262,7 +262,7 @@ TEST_F(WiredTigerKVEngineRepairTest, UnrecoverableOrphanedDataFilesAreRebuilt) {
         shard_role_details::getRecoveryUnit(opCtxPtr.get()), ident, /*identHasSizeInfo=*/true));
 
 #ifdef _WIN32
-    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident);
+    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident, options);
     ASSERT_EQ(ErrorCodes::CommandNotSupported, status.code());
 #else
     // The ident may not get immediately dropped, so ensure it is completely gone.
@@ -280,14 +280,13 @@ TEST_F(WiredTigerKVEngineRepairTest, UnrecoverableOrphanedDataFilesAreRebuilt) {
 
     // This should recreate an empty data file successfully and move the old one to a name that ends
     // in ".corrupt".
-    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident);
+    auto status = _helper.getWiredTigerKVEngine()->recoverOrphanedIdent(nss, ident, options);
     ASSERT_EQ(ErrorCodes::DataModifiedByRepair, status.code()) << status.reason();
 
     boost::filesystem::path corruptFile = (dataFilePath->string() + ".corrupt");
     ASSERT(boost::filesystem::exists(corruptFile));
 
-    rs = _helper.getWiredTigerKVEngine()->getRecordStore(
-        opCtxPtr.get(), nss, ident, defaultCollectionOptions);
+    rs = _helper.getWiredTigerKVEngine()->getRecordStore(opCtxPtr.get(), nss, ident, options, uuid);
     RecordData data;
     ASSERT_FALSE(rs->findRecord(opCtxPtr.get(), loc, &data));
 #endif
@@ -395,9 +394,8 @@ TEST_F(WiredTigerKVEngineTest, CreateRecordStoreFailsWithExistingIdent) {
 
     NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
     std::string ident = "collection-1234";
-
-    std::unique_ptr<RecordStore> rs;
-    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident));
+    RecordStore::Options options;
+    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options));
 
     // A new record store must always have its own storage table uniquely identified by the ident.
     // Otherwise, multiple record stores could point to the same storage resource and lead to data
@@ -406,7 +404,7 @@ TEST_F(WiredTigerKVEngineTest, CreateRecordStoreFailsWithExistingIdent) {
     // Validate the server throws when trying to create a new record store with an ident already in
     // use.
 
-    const auto status = _helper.getWiredTigerKVEngine()->createRecordStore(nss, ident);
+    const auto status = _helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options);
     ASSERT_NOT_OK(status);
     ASSERT_EQ(status.code(), ErrorCodes::ObjectAlreadyExists);
 }
@@ -421,10 +419,9 @@ TEST_F(WiredTigerKVEngineTest, IdentDrop) {
 
     NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
     std::string ident = "collection-1234";
-    CollectionOptions defaultCollectionOptions;
+    RecordStore::Options options;
 
-    std::unique_ptr<RecordStore> rs;
-    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident));
+    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options));
 
     const boost::optional<boost::filesystem::path> dataFilePath =
         _helper.getWiredTigerKVEngine()->getDataFilePathForIdent(ident);
@@ -437,7 +434,7 @@ TEST_F(WiredTigerKVEngineTest, IdentDrop) {
 
     // Because the underlying file was not removed, it will be renamed out of the way by WiredTiger
     // when creating a new table with the same ident.
-    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident));
+    ASSERT_OK(_helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options));
 
     const boost::filesystem::path renamedFilePath = dataFilePath->generic_string() + ".1";
     ASSERT(boost::filesystem::exists(*dataFilePath));
@@ -913,8 +910,8 @@ protected:
     // Creates the given ident, returning the path to it.
     StatusWith<boost::filesystem::path> createIdent(StringData ns, StringData ident) {
         NamespaceString nss = NamespaceString::createNamespaceString_forTest(ns);
-        CollectionOptions defaultCollectionOptions;
-        Status stat = _helper.getWiredTigerKVEngine()->createRecordStore(nss, ident);
+        RecordStore::Options options;
+        Status stat = _helper.getWiredTigerKVEngine()->createRecordStore(nss, ident, options);
         if (!stat.isOK()) {
             return stat;
         }
@@ -995,6 +992,19 @@ TEST_F(WiredTigerKVEngineDirectoryTest, HandlesNestedDirectories) {
     // lots
     ASSERT_FALSE(boost::filesystem::exists(
         path.getValue().parent_path().parent_path().parent_path().parent_path()));
+}
+
+TEST_F(WiredTigerKVEngineTest, CheckSessionCacheMax) {
+
+    RAIIServerParameterControllerForTest sessionCacheMax{"wiredTigerSessionCacheMaxPercentage", 20};
+    RAIIServerParameterControllerForTest sessionMax{"wiredTigerSessionMax", 150};
+    _helper.restartEngine();
+
+    auto* engine = _helper.getWiredTigerKVEngine();
+    auto& connection = engine->getConnection();
+
+    // Check that the configured session cache max is derived correctly.
+    ASSERT_EQ(connection.getSessionCacheMax(), 30);
 }
 
 }  // namespace

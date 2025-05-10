@@ -68,6 +68,7 @@
 #include "mongo/s/cluster_ddl.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
+#include "mongo/s/router_role.h"
 #include "mongo/s/stale_shard_version_helpers.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/namespace_string_util.h"
@@ -157,17 +158,22 @@ void SessionsCollectionConfigServer::_generateIndexesIfNeeded(OperationContext* 
                 }
             }();
 
-            return scatterGatherVersionedTargetByRoutingTable(
-                opCtx,
-                nss,
-                cri,
-                SessionsCollection::generateCreateIndexesCmd(),
-                ReadPreferenceSetting(ReadPreference::PrimaryOnly),
-                Shard::RetryPolicy::kNoRetry,
-                BSONObj() /*query*/,
-                BSONObj() /*collation*/,
-                boost::none /*letParameters*/,
-                boost::none /*runtimeConstants*/);
+            // TODO SERVER-104347 Acquire CollectionRoutingInfo through RoutingContext only and
+            // remove direct CatalogCache access in the check above.
+            return routing_context_utils::withValidatedRoutingContext(
+                opCtx, {{nss, cri}}, [&](RoutingContext& routingCtx) {
+                    return scatterGatherVersionedTargetByRoutingTable(
+                        opCtx,
+                        nss,
+                        routingCtx,
+                        SessionsCollection::generateCreateIndexesCmd(),
+                        ReadPreferenceSetting(ReadPreference::PrimaryOnly),
+                        Shard::RetryPolicy::kNoRetry,
+                        BSONObj() /*query*/,
+                        BSONObj() /*collation*/,
+                        boost::none /*letParameters*/,
+                        boost::none /*runtimeConstants*/);
+                });
         });
 
     for (auto& shardResult : shardResults) {

@@ -8,6 +8,7 @@ load(
     "build_otel",
     "compiler_type",
     "compress_debug_compile",
+    "create_dwp",
     "dbg",
     "dbg_level",
     "debug_symbols",
@@ -46,7 +47,6 @@ load(
     "use_disable_ref_track",
     "use_gdbserver",
     "use_glibcxx_debug",
-    "use_libcxx",
     "use_lldbserver",
     "use_ocsp_stapling",
     "use_wait_for_debugger",
@@ -443,14 +443,6 @@ selects.config_setting_group(
     ],
 )
 
-selects.config_setting_group(
-    name = "macos_opt_off",
-    match_all = [
-        "@platforms//os:macos",
-        ":opt_off",
-    ],
-)
-
 # ==========
 # dbg
 # ==========
@@ -745,6 +737,13 @@ config_setting(
 )
 
 config_setting(
+    name = "_linker_mold",
+    flag_values = {
+        "//bazel/config:linker": "mold",
+    },
+)
+
+config_setting(
     name = "_linker_lld",
     flag_values = {
         "//bazel/config:linker": "lld",
@@ -795,6 +794,23 @@ selects.config_setting_group(
         ":linker_lld",
         ":not_s390x",
         ":not_macos",
+    ],
+)
+
+selects.config_setting_group(
+    name = "linker_mold_valid_settings",
+    match_all = [
+        ":_linker_mold",
+        ":not_macos",
+    ],
+)
+
+selects.config_setting_group(
+    name = "linker_not_mold",
+    match_any = [
+        ":linker_default",
+        ":linker_lld",
+        ":linker_gold",
     ],
 )
 
@@ -1225,44 +1241,6 @@ selects.config_setting_group(
     match_all = [
         ":use_glibcxx_debug_enabled",
         ":dbg_enabled",
-        ":use_libcxx_disabled",
-    ],
-)
-
-# --------------------------------------
-# libc++ options
-# --------------------------------------
-
-use_libcxx(
-    name = "use_libcxx",
-    build_setting_default = False,
-)
-
-# TODO SERVER-85340 when libc++ is readded remove the macos constraint
-config_setting(
-    name = "use_libcxx_enabled",
-    constraint_values = [
-        "@platforms//os:macos",
-    ],
-    flag_values = {
-        "//bazel/config:use_libcxx": "True",
-    },
-)
-
-config_setting(
-    name = "use_libcxx_disabled",
-    flag_values = {
-        "//bazel/config:use_libcxx": "False",
-    },
-)
-
-# --------------------------------------------
-# ----------- computed libc++ flags ----------
-selects.config_setting_group(
-    name = "use_libcxx_required_settings",
-    match_all = [
-        ":use_libcxx_enabled",
-        ":compiler_type_clang",
     ],
 )
 
@@ -1771,6 +1749,15 @@ selects.config_setting_group(
     match_all = [
         ":shared_archive_enabled",
         ":compiler_type_gcc",
+    ],
+)
+
+selects.config_setting_group(
+    name = "shared_archive_enabled_gcc_not_mold",
+    match_all = [
+        ":shared_archive_enabled",
+        ":compiler_type_gcc",
+        ":linker_not_mold",
     ],
 )
 
@@ -2334,11 +2321,39 @@ selects.config_setting_group(
 # --------------------------------------
 
 selects.config_setting_group(
+    name = "symbol_ordering_file_enabled_al2023",
+    match_all = [
+        "@platforms//os:linux",
+        "//bazel/platforms:amazon_linux_2023",
+        ":opt_any",
+        ":linker_lld",
+    ],
+)
+
+selects.config_setting_group(
+    name = "not_amazon_linux_2023",
+    match_any = [
+        "//bazel/platforms:ubuntu18",
+        "//bazel/platforms:ubuntu20",
+        "//bazel/platforms:ubuntu22",
+        "//bazel/platforms:ubuntu24",
+        "//bazel/platforms:amazon_linux_2",
+        "//bazel/platforms:debian10",
+        "//bazel/platforms:debian12",
+        "//bazel/platforms:rhel8",
+        "//bazel/platforms:rhel9",
+        "//bazel/platforms:suse12",
+        "//bazel/platforms:suse15",
+    ],
+)
+
+selects.config_setting_group(
     name = "symbol_ordering_file_enabled",
     match_all = [
         "@platforms//os:linux",
         ":opt_any",
         ":linker_lld",
+        "//bazel/config:not_amazon_linux_2023",
     ],
 )
 
@@ -2593,6 +2608,19 @@ config_setting(
     },
 )
 
+config_setting(
+    name = "linux_clang_fission",
+    constraint_values = [
+        "@platforms//os:linux",
+    ],
+    flag_values = {
+        "//bazel/config:compiler_type": "clang",
+    },
+    values = {
+        "fission": "yes",
+    },
+)
+
 selects.config_setting_group(
     name = "linux_gcc_fission_x86_64",
     match_all = [
@@ -2606,6 +2634,54 @@ selects.config_setting_group(
     match_all = [
         "@platforms//cpu:aarch64",
         ":linux_gcc_fission",
+    ],
+)
+
+# --------------------------------------
+# create_dwp
+# --------------------------------------
+
+bool_flag(
+    name = "create_dwp",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "create_dwp_enabled",
+    flag_values = {
+        "//bazel/config:create_dwp": "True",
+    },
+)
+
+config_setting(
+    name = "create_dwp_disabled",
+    flag_values = {
+        "//bazel/config:create_dwp": "False",
+    },
+)
+
+selects.config_setting_group(
+    name = "dwp_supported",
+    match_any = [
+        ":clang_dwp_supported",
+        ":gcc_dwp_supported",
+    ],
+)
+
+selects.config_setting_group(
+    name = "gcc_dwp_supported",
+    match_all = [
+        ":linux_gcc_fission",
+        ":dwarf_version_4",
+        ":create_dwp_enabled",
+    ],
+)
+
+selects.config_setting_group(
+    name = "clang_dwp_supported",
+    match_all = [
+        ":linux_clang_fission",
+        ":create_dwp_enabled",
     ],
 )
 

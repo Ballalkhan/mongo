@@ -36,6 +36,7 @@
 #include "mongo/db/pipeline/document_source_change_stream_check_resumability.h"
 #include "mongo/db/pipeline/document_source_change_stream_check_topology_change.h"
 #include "mongo/db/pipeline/document_source_change_stream_handle_topology_change.h"
+#include "mongo/db/pipeline/document_source_change_stream_inject_control_events.h"
 #include "mongo/db/pipeline/document_source_change_stream_transform.h"
 #include "mongo/db/pipeline/document_source_change_stream_unwind_transaction.h"
 #include "mongo/db/pipeline/document_source_coll_stats.h"
@@ -70,7 +71,6 @@
 #include "mongo/db/pipeline/document_source_lookup.h"
 #include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_merge.h"
-#include "mongo/db/pipeline/document_source_operation_metrics.h"
 #include "mongo/db/pipeline/document_source_out.h"
 #include "mongo/db/pipeline/document_source_plan_cache_stats.h"
 #include "mongo/db/pipeline/document_source_query_stats.h"
@@ -139,6 +139,7 @@ void registerMongodVisitor(ServiceContext* service) {
                        DocumentSourceChangeStreamCheckResumability,
                        DocumentSourceChangeStreamCheckTopologyChange,
                        DocumentSourceChangeStreamHandleTopologyChange,
+                       DocumentSourceChangeStreamInjectControlEvents,
                        DocumentSourceChangeStreamTransform,
                        DocumentSourceChangeStreamUnwindTransaction,
                        DocumentSourceCollStats,
@@ -173,7 +174,6 @@ void registerMongodVisitor(ServiceContext* service) {
                        DocumentSourceLookUp,
                        DocumentSourceMatch,
                        DocumentSourceMerge,
-                       DocumentSourceOperationMetrics,
                        DocumentSourceOut,
                        DocumentSourcePlanCacheStats,
                        DocumentSourceQueue,

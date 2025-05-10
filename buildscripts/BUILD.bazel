@@ -8,6 +8,8 @@ exports_files([
     "jstoh.py",
     "msitrim.py",
     "pip_requirements.py",
+    "symbols.orderfile",
+    "symbols-al2023.orderfile",
 ])
 
 py_binary(
@@ -225,4 +227,21 @@ sh_binary(
 sh_binary(
     name = "mount_drives",
     srcs = ["mount_drives.sh"],
+)
+
+py_binary(
+    name = "gather_failed_unittests",
+    srcs = ["gather_failed_unittests.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//buildscripts/util",
+        dependency(
+            "typer",
+            group = "core",
+        ),
+        dependency(
+            "pyyaml",
+            group = "core",
+        ),
+    ],
 )

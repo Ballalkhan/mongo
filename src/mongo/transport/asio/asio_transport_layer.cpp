@@ -65,6 +65,7 @@
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/options_parser/startup_options.h"
+#include "mongo/util/processinfo.h"
 #include "mongo/util/signal_handlers_synchronous.h"
 #include "mongo/util/strong_weak_finish_line.h"
 
@@ -185,9 +186,14 @@ public:
     AsioReactor() : _clkSource(this), _stats(&_clkSource), _ioContext() {}
 
     void run() override {
-        ThreadIdGuard threadIdGuard(this);
-        asio::io_context::work work(_ioContext);
-        _ioContext.run();
+        try {
+            ThreadIdGuard threadIdGuard(this);
+            asio::io_context::work work(_ioContext);
+            _ioContext.run();
+        } catch (...) {
+            auto status = exceptionToStatus();
+            LOGV2_FATAL(10470501, "Unable to start an ASIO reactor", "error"_attr = status);
+        }
     }
 
     void stop() override {
@@ -362,23 +368,23 @@ public:
 
     WrappedEndpoint() = default;
 
-    Endpoint* operator->() noexcept {
+    Endpoint* operator->() {
         return &_endpoint;
     }
 
-    const Endpoint* operator->() const noexcept {
+    const Endpoint* operator->() const {
         return &_endpoint;
     }
 
-    Endpoint& operator*() noexcept {
+    Endpoint& operator*() {
         return _endpoint;
     }
 
-    const Endpoint& operator*() const noexcept {
+    const Endpoint& operator*() const {
         return _endpoint;
     }
 
-    bool operator<(const WrappedEndpoint& rhs) const noexcept {
+    bool operator<(const WrappedEndpoint& rhs) const {
         return _endpoint < rhs._endpoint;
     }
 
@@ -1147,9 +1153,12 @@ void AsioTransportLayer::_runListener() {
         return;
     }
 
+    const int listenBacklog = serverGlobalParams.listenBacklog
+        ? *serverGlobalParams.listenBacklog
+        : ProcessInfo::getDefaultListenBacklog();
     for (auto& acceptorRecord : _acceptorRecords) {
         asio::error_code ec;
-        (void)acceptorRecord->acceptor.listen(serverGlobalParams.listenBacklog, ec);
+        (void)acceptorRecord->acceptor.listen(listenBacklog, ec);
         if (ec) {
             LOGV2_FATAL(31339,
                         "Error listening for new connections on listen address",

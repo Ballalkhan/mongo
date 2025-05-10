@@ -88,6 +88,8 @@
 
 namespace mongo {
 
+MONGO_FAIL_POINT_DEFINE(hangShardRoleAfterEstablishCappedSnapshot);
+
 using TransactionResources = shard_role_details::TransactionResources;
 
 namespace {
@@ -294,8 +296,8 @@ void checkPlacementVersion(OperationContext* opCtx,
                            const PlacementConcern& placementConcern) {
     const auto& receivedDbVersion = placementConcern.getDbVersion();
     if (receivedDbVersion) {
-        const auto scopedDss = DatabaseShardingState::acquireShared(opCtx, nss.dbName());
-        scopedDss->assertMatchingDbVersion(opCtx, *receivedDbVersion);
+        const auto scopedDss = DatabaseShardingState::acquire(opCtx, nss.dbName());
+        scopedDss->checkDbVersionOrThrow(opCtx, *receivedDbVersion);
     }
 
     const auto& receivedShardVersion = placementConcern.getShardVersion();
@@ -644,12 +646,19 @@ void checkShardingPlacement(OperationContext* opCtx,
 
 ResolvedNamespaceOrViewAcquisitionRequest::LockFreeReadsResources takeGlobalLock(
     OperationContext* opCtx, const CollectionOrViewAcquisitionRequests& acquisitionRequests) {
+    invariant(!acquisitionRequests.empty());
+
+    const auto deadline =
+        std::min_element(acquisitionRequests.begin(),
+                         acquisitionRequests.end(),
+                         [](const auto& lhs, const auto& rhs) {
+                             return lhs.lockAcquisitionDeadline < rhs.lockAcquisitionDeadline;
+                         })
+            ->lockAcquisitionDeadline;
+
     auto lockFreeReadsBlock = std::make_shared<LockFreeReadsBlock>(opCtx);
-    auto globalLock = std::make_shared<Lock::GlobalLock>(opCtx,
-                                                         MODE_IS,
-                                                         Date_t::max(),
-                                                         Lock::InterruptBehavior::kThrow,
-                                                         kLockFreeReadsGlobalLockOptions);
+    auto globalLock = std::make_shared<Lock::GlobalLock>(
+        opCtx, MODE_IS, deadline, Lock::InterruptBehavior::kThrow, kLockFreeReadsGlobalLockOptions);
     return {lockFreeReadsBlock, globalLock};
 }
 
@@ -712,7 +721,6 @@ logv2::DynamicAttributes getCurOpLogAttrs(OperationContext* opCtx) {
     logv2::DynamicAttributes attr;
     const auto curop = CurOp::get(opCtx);
     curop->debug().report(opCtx,
-                          nullptr,
                           nullptr,
                           curop->getOperationStorageMetrics(),
                           curop->getPrepareReadConflicts(),
@@ -1120,6 +1128,7 @@ void SnapshotAttempt::openStorageSnapshot() {
     for (auto& nssOrUUID : _acquisitionRequests) {
         establishCappedSnapshotIfNeeded(_opCtx, *_catalogBeforeSnapshot, nssOrUUID);
     }
+    hangShardRoleAfterEstablishCappedSnapshot.pauseWhileSet(_opCtx);
 
     if (!shard_role_details::getRecoveryUnit(_opCtx)->isActive()) {
         shard_role_details::getRecoveryUnit(_opCtx)->preallocateSnapshot();
@@ -2065,6 +2074,18 @@ void shard_role_details::checkShardingAndLocalCatalogCollectionUUIDMatch(
                         "local uuid"_attr = localUuidString);
         }
     }
+}
+
+NamespaceString shard_role_nocheck::resolveNssWithoutAcquisition(OperationContext* opCtx,
+                                                                 const DatabaseName& dbName,
+                                                                 const UUID& uuid) {
+    return CollectionCatalog::get(opCtx)->resolveNamespaceStringFromDBNameAndUUID(
+        opCtx, dbName, uuid);
+}
+
+boost::optional<NamespaceString> shard_role_nocheck::lookupNssWithoutAcquisition(
+    OperationContext* opCtx, const UUID& uuid) {
+    return CollectionCatalog::get(opCtx)->lookupNSSByUUID(opCtx, uuid);
 }
 
 }  // namespace mongo

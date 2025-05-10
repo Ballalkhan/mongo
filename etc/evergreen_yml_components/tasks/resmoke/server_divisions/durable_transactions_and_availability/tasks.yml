@@ -333,6 +333,27 @@ tasks:
         vars:
           resmoke_jobs_max: 1
 
+  # TODO (SERVER-101590): Remove this temporary suite.
+  - <<: *gen_task_template
+    name: concurrency_replication_viewless_timeseries_gen
+    tags:
+      [
+        "assigned_to_jira_team_server_catalog_and_routing",
+        "requires_all_feature_flags",
+        "viewless_timeseries",
+        "release_critical",
+        "incompatible_mac",
+        "incompatible_ppc",
+        "incompatible_s390x",
+        "concurrency",
+        "common",
+        "repl",
+      ]
+    commands:
+      - func: "generate resmoke tasks"
+        vars:
+          resmoke_jobs_max: 1
+
   - <<: *gen_task_template
     name: concurrency_replication_multi_stmt_txn_gen
     tags:
@@ -490,6 +511,31 @@ tasks:
           use_large_distro: "true"
           resmoke_jobs_max: 1
 
+  # TODO (SERVER-101590): Remove this temporary suite.
+  - <<: *gen_task_template
+    name: concurrency_sharded_replication_viewless_timeseries_gen
+    tags:
+      [
+        "assigned_to_jira_team_server_catalog_and_routing",
+        "requires_all_feature_flags",
+        "viewless_timeseries",
+        "release_critical",
+        "incompatible_mac",
+        "incompatible_ppc",
+        "incompatible_s390x",
+        "incompatible_debug_mode",
+        "concurrency",
+        "common",
+        "read_concern_maj",
+        "large",
+        "sharded",
+      ]
+    commands:
+      - func: "generate resmoke tasks"
+        vars:
+          use_large_distro: "true"
+          resmoke_jobs_max: 1
+
   - <<: *gen_task_template
     name: concurrency_sharded_replication_multiversion_gen
     tags:
@@ -509,28 +555,6 @@ tasks:
         vars:
           resmoke_args: >-
             --runNoFeatureFlagTests
-
-  - <<: *gen_task_template
-    name: concurrency_sharded_replication_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_repl",
-        "release_critical",
-        "incompatible_mac",
-        "incompatible_ppc",
-        "incompatible_s390x",
-        "incompatible_debug_mode",
-        "concurrency",
-        "common",
-        "read_concern_maj",
-        "large",
-        "sharded",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
 
   - <<: *gen_task_template
     name: concurrency_simultaneous_replication_gen
@@ -1845,34 +1869,6 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           suite: concurrency_sharded_replication
-          resmoke_args: >-
-            --fuzzMongodConfigs=normal
-            --fuzzMongosConfigs=normal
-            --fuzzRuntimeParams
-            --excludeWithAnyTags=does_not_support_config_fuzzer
-          use_xlarge_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: config_fuzzer_concurrency_sharded_replication_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_repl",
-        "concurrency",
-        "config_fuzzer",
-        "default",
-        "large",
-        "sharded",
-        "incompatible_tsan",
-        "incompatible_aubsan",
-        "incompatible_debug_mode",
-        "incompatible_inmemory",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          suite: concurrency_sharded_replication_with_balancer
           resmoke_args: >-
             --fuzzMongodConfigs=normal
             --fuzzMongosConfigs=normal

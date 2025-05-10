@@ -101,27 +101,6 @@ mongo_cc_library(
     ],
 )
 
-idl_generator(
-    name = "operation_resource_consumption_gen",
-    src = "operation_resource_consumption.idl",
-)
-
-mongo_cc_library(
-    name = "resource_consumption_metrics",
-    srcs = [
-        "resource_consumption_metrics.cpp",
-        ":operation_resource_consumption_gen",
-    ],
-    hdrs = [
-        "resource_consumption_metrics.h",
-    ],
-    deps = [
-        "//src/mongo/db:server_base",
-        "//src/mongo/db/commands:server_status_core",
-        "//src/mongo/db/repl:repl_coordinator_interface",  # TODO(SERVER-93876): Remove.
-    ],
-)
-
 mongo_cc_library(
     name = "transaction_stats",
     srcs = [
@@ -265,14 +244,12 @@ mongo_cc_unit_test(
     srcs = [
         "api_version_metrics_test.cpp",
         "operation_latency_histogram_test.cpp",
-        "resource_consumption_metrics_test.cpp",
         "timer_stats_test.cpp",
         "top_test.cpp",
     ],
     tags = ["mongo_unittest_first_group"],
     deps = [
         ":api_version_metrics",
-        ":resource_consumption_metrics",
         ":timer_stats",
         ":top",
         "//src/mongo:base",
