@@ -80,6 +80,10 @@ public:
                              const NamespaceString& ns) final {
         return Status::OK();
     }
+    std::unique_ptr<SpillTable> makeSpillTable(OperationContext* opCtx, KeyFormat keyFormat) final {
+
+        return {};
+    }
     std::unique_ptr<TemporaryRecordStore> makeTemporaryRecordStore(OperationContext* opCtx,
                                                                    KeyFormat keyFormat) final {
         return {};
@@ -104,9 +108,6 @@ public:
         return false;
     }
     bool supportsReadConcernSnapshot() const final {
-        return false;
-    }
-    bool supportsOplogTruncateMarkers() const final {
         return false;
     }
     void clearDropPendingState(OperationContext* opCtx) final {}
@@ -240,6 +241,10 @@ public:
 
     Status autoCompact(RecoveryUnit&, const AutoCompactOptions& options) final {
         return Status::OK();
+    }
+
+    bool hasOngoingLiveRestore() final {
+        return false;
     }
 };
 

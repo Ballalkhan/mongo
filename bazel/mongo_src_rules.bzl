@@ -217,7 +217,8 @@ TCMALLOC_DEPS = select({
 }, no_match_error = TCMALLOC_ERROR_MESSAGE)
 
 SYMBOL_ORDER_FILES = [
-    "//:symbols.orderfile",
+    "//buildscripts:symbols.orderfile",
+    "//buildscripts:symbols-al2023.orderfile",
 ]
 
 # These are warnings are disabled globally at the toolchain level to allow external repository compilation.
@@ -342,6 +343,7 @@ def mongo_cc_library(
         data = [],
         tags = [],
         copts = [],
+        cxxopts = [],
         linkopts = [],
         includes = [],
         linkstatic = False,
@@ -419,8 +421,6 @@ def mongo_cc_library(
         hdrs = hdrs + ["//src/mongo:mongo_config_header"]
         if name != "boost_assert_shim" and name != "mongoca" and name != "cyrus_sasl_windows_test_plugin":
             deps += MONGO_GLOBAL_SRC_DEPS
-            if name != "_global_header_bypass":
-                deps += ["//src/mongo:_global_header_bypass"]
         features = features + RE_ENABLE_DISABLED_3RD_PARTY_WARNINGS_FEATURES
 
     if "modules/enterprise" in native.package_name():
@@ -535,6 +535,7 @@ def mongo_cc_library(
         visibility = visibility,
         testonly = testonly,
         copts = copts,
+        cxxopts = cxxopts,
         data = data,
         tags = tags + ["mongo_library"],
         linkopts = linkopts,
@@ -566,6 +567,7 @@ def mongo_cc_library(
         visibility = visibility,
         testonly = testonly,
         copts = copts,
+        cxxopts = cxxopts,
         data = data,
         tags = tags + ["mongo_library"],
         linkopts = linkopts,
@@ -701,7 +703,6 @@ def _mongo_cc_binary_and_test(
     if native.package_name().startswith("src/mongo"):
         srcs = srcs + ["//src/mongo:mongo_config_header"]
         deps += MONGO_GLOBAL_SRC_DEPS
-        deps += ["//src/mongo:_global_header_bypass"]
         features = features + RE_ENABLE_DISABLED_3RD_PARTY_WARNINGS_FEATURES
 
     if "modules/enterprise" in native.package_name():
@@ -809,14 +810,17 @@ def _mongo_cc_binary_and_test(
         "visibility": visibility,
         "testonly": testonly,
         "copts": copts,
-        "data": data + SANITIZER_DATA,
+        "data": data + SANITIZER_DATA + select({
+            "//bazel/platforms:use_mongo_toolchain": ["@gdb"],
+            "//conditions:default": [],
+        }),
         "tags": tags,
         "linkopts": linkopts + rpath_flags + select({
             "//bazel/config:thin_lto_enabled": ["-Wl,--threads=" + str(NUM_CPUS)],
             "//bazel/config:bolt_enabled": ["-Wl,--threads=" + str(NUM_CPUS)],
             "//conditions:default": [],
         }) + select({
-            "//bazel/config:simple_build_id_enabled": ["-Wl,--build-id=0x%x%x" % (hash(name), hash(str(UNSAFE_VERSION_ID) + str(UNSAFE_COMPILE_VARIANT)))],
+            "//bazel/config:simple_build_id_enabled": ["-Wl,--build-id=0x%x%x%x" % (hash(name), hash(name), hash(str(UNSAFE_VERSION_ID) + str(UNSAFE_COMPILE_VARIANT)))],
             "//conditions:default": [],
         }),
         "linkstatic": LINKSTATIC_ENABLED,
@@ -848,9 +852,11 @@ def _mongo_cc_binary_and_test(
         "env": env | SANITIZER_ENV,
     } | kwargs
 
+    # we dont want the intermediate build targets to be picked up by tags
+    # so we empty it out
     original_tags = list(args["tags"])
+    args["tags"] = ["intermediate_debug"] + [tag + "_debug" for tag in original_tags]
     if _program_type == "binary":
-        args["tags"] += ["intermediate_target"]
         cc_binary(**args)
         extract_debuginfo_binary(
             name = name,
@@ -863,7 +869,6 @@ def _mongo_cc_binary_and_test(
             visibility = visibility,
         )
     else:
-        args["tags"] += ["intermediate_target"]
         native.cc_test(**args)
         extract_debuginfo_test(
             name = name,

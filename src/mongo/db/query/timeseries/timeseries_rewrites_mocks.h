@@ -160,15 +160,9 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    void cappedTruncateAfter(OperationContext*, const RecordId&, bool) const {
-        MONGO_UNREACHABLE;
-    }
-
-    Validator parseValidator(
-        OperationContext*,
-        const BSONObj&,
-        MatchExpressionParser::AllowedFeatureSet,
-        boost::optional<multiversion::FeatureCompatibilityVersion>) const override {
+    Validator parseValidator(OperationContext*,
+                             const BSONObj&,
+                             MatchExpressionParser::AllowedFeatureSet) const override {
         MONGO_UNREACHABLE;
     }
 

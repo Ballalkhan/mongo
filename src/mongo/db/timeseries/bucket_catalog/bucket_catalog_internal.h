@@ -90,16 +90,6 @@ StripeNumber getStripeNumber(const BucketCatalog& catalog, const BucketKey& key)
 StripeNumber getStripeNumber(const BucketCatalog& catalog, const BucketId& bucketId);
 
 /**
- * Extracts the information from the input 'doc' that is used to map the document to a bucket.
- */
-StatusWith<std::pair<BucketKey, Date_t>> extractBucketingParameters(
-    tracking::Context&,
-    const UUID& collectionUUID,
-    const TimeseriesOptions& options,
-    const BSONObj& doc);
-
-
-/**
  * Retrieve a bucket for read-only use.
  */
 const Bucket* findBucket(BucketStateRegistry& registry,
@@ -125,17 +115,6 @@ Bucket* useBucketAndChangePreparedState(BucketStateRegistry& registry,
                                         WithLock stripeLock,
                                         const BucketId& bucketId,
                                         BucketPrepareAction prepare);
-
-/**
- * Retrieve the open bucket for write use if one exists. If none exists then we will create a new
- * bucket.
- */
-Bucket* useBucket(BucketCatalog& catalog,
-                  Stripe& stripe,
-                  WithLock stripeLock,
-                  InsertContext& info,
-                  const Date_t& time,
-                  const StringDataComparator* comparator);
 
 /**
  * Retrieve all open buckets from 'stripe' given a bucket key.
@@ -220,22 +199,6 @@ StatusWith<std::reference_wrapper<Bucket>> loadBucketIntoCatalog(
     const BucketKey& key,
     tracking::unique_ptr<Bucket>&& bucket,
     std::uint64_t targetEra);
-
-/**
- * Given an already-selected 'bucket', inserts 'doc' to the bucket if possible. If not, we will
- * create a new bucket and insert into that bucket.
- */
-std::variant<std::shared_ptr<WriteBatch>, RolloverReason> insertIntoBucket(
-    BucketCatalog& catalog,
-    Stripe& stripe,
-    WithLock stripeLock,
-    const BSONObj& doc,
-    OperationId opId,
-    InsertContext& insertContext,
-    Bucket& existingBucket,
-    const Date_t& time,
-    uint64_t storageCacheSizeBytes,
-    const StringDataComparator* comparator);
 
 /**
  * Wait for other batches to finish so we can prepare 'batch'
@@ -379,21 +342,6 @@ Bucket& allocateBucket(BucketCatalog& catalog,
                        ExecutionStatsController& stats);
 
 /**
- * Closes the existing, full bucket and open a new one for the same metadata.
- * Writes information about the closed bucket to the 'info' parameter.
- */
-Bucket& rolloverAndAllocateBucket(BucketCatalog& catalog,
-                                  Stripe& stripe,
-                                  WithLock stripeLock,
-                                  Bucket& bucket,
-                                  const BucketKey& key,
-                                  const TimeseriesOptions& timeseriesOptions,
-                                  RolloverReason reason,
-                                  const Date_t& time,
-                                  const StringDataComparator* comparator,
-                                  ExecutionStatsController& stats);
-
-/**
  * Determines if and why 'bucket' needs to be rolled over to accommodate 'doc'.
  * Will also update the bucket catalog stats incNumBucketsKeptOpenDueToLargeMeasurements as
  * appropriate.
@@ -488,43 +436,23 @@ bool stageInsertBatchIntoEligibleBucket(BucketCatalog& catalog,
                                         std::shared_ptr<WriteBatch>& writeBatch);
 
 /**
- * Given an already-selected 'bucket', inserts 'doc' to the bucket if possible. If not, we return
- * the reason for why attempting to insert the measurement into the bucket would result in the
- * bucket being rolled over.
+ * Given an already-selected 'bucket', inserts the measurement in 'batchedInsertTuple' to the bucket
+ * if possible.
+ * Returns true if successfully inserted.
+ * Returns false if 'bucket' needs to be rolled over. Marks its 'rolloverReason' accordingly.
  */
-std::variant<std::shared_ptr<WriteBatch>, RolloverReason> tryToInsertIntoBucketWithoutRollover(
-    BucketCatalog& catalog,
-    Stripe& stripe,
-    WithLock stripeLock,
-    const BatchedInsertTuple& batchedInsertTuple,
-    OperationId opId,
-    const TimeseriesOptions& timeseriesOptions,
-    const StripeNumber& stripeNumber,
-    ExecutionStatsController& stats,
-    uint64_t storageCacheSizeBytes,
-    const StringDataComparator* comparator,
-    Bucket& bucket);
-
-/**
- * Given a bucket 'bucket' and a measurement 'doc', updates the WriteBatch corresponding to the
- * inputted bucket as well as the bucket itself to reflect the addition of the measurement. This
- * includes updating the batch/bucket estimated sizes and the bucket's schema.
- * Returns the WriteBatch for the bucket.
- */
-std::shared_ptr<WriteBatch> addMeasurementToBatchAndBucket(
-    BucketCatalog& catalog,
-    const BSONObj& measurement,
-    OperationId opId,
-    const TimeseriesOptions& timeseriesOptions,
-    const StripeNumber& stripeNumber,
-    ExecutionStatsController& stats,
-    const StringDataComparator* comparator,
-    Bucket::NewFieldNames& newFieldNamesToBeInserted,
-    const Sizes& sizesToBeAdded,
-    bool isNewlyOpenedBucket,
-    bool openedDueToMetadata,
-    Bucket& bucket);
-
+bool tryToInsertIntoBucketWithoutRollover(BucketCatalog& catalog,
+                                          Stripe& stripe,
+                                          WithLock stripeLock,
+                                          const BatchedInsertTuple& batchedInsertTuple,
+                                          OperationId opId,
+                                          const TimeseriesOptions& timeseriesOptions,
+                                          const StripeNumber& stripeNumber,
+                                          ExecutionStatsController& stats,
+                                          uint64_t storageCacheSizeBytes,
+                                          const StringDataComparator* comparator,
+                                          Bucket& bucket,
+                                          std::shared_ptr<WriteBatch>& writeBatch);
 
 /**
  * Given a bucket 'bucket', a measurement 'doc', and the 'writeBatch', updates the 'writeBatch'

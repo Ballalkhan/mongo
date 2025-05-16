@@ -37,6 +37,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - debian12-large
+      - name: run_unit_tests_TG
+        distros:
+          - debian12-large
       - name: test_packages
         distros:
           - ubuntu2204-large
@@ -79,6 +82,9 @@ buildvariants:
       compile_variant: enterprise-debian12-64
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - debian12-large
+      - name: run_unit_tests_TG
         distros:
           - debian12-large
       - name: test_packages

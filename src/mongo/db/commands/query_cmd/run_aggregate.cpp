@@ -113,7 +113,6 @@
 #include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameter.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/tenant_id.h"
@@ -152,33 +151,6 @@ namespace {
 Rarely _samplerAccumulatorJs, _samplerFunctionJs;
 
 MONGO_FAIL_POINT_DEFINE(hangAfterCreatingAggregationPlan);
-
-std::unique_ptr<Pipeline, PipelineDeleter> handleViewHelper(
-    const AggExState& aggExState,
-    boost::intrusive_ptr<ExpressionContext> expCtx,
-    std::unique_ptr<Pipeline, PipelineDeleter> pipeline,
-    boost::optional<UUID> uuid) {
-    if (aggExState.getResolvedView()->timeseries()) {
-        // For timeseries, there may have been rewrites done on the raw BSON pipeline
-        // during view resolution. We must parse the request's full resolved pipeline
-        // which will account for those rewrites.
-        // TODO SERVER-82101 Re-organize timeseries rewrites so timeseries can follow the
-        // same pattern here as other views
-        return Pipeline::parse(aggExState.getRequest().getPipeline(), expCtx);
-    } else if (search_helpers::isMongotPipeline(pipeline.get()) &&
-               expCtx->isFeatureFlagMongotIndexedViewsEnabled()) {
-        // For search queries on views don't do any of the pipeline stitching that is done for
-        // normal views.
-        return pipeline;
-    }
-
-    // Parse the view pipeline, then stitch the user pipeline and view pipeline together
-    // to build the total aggregation pipeline.
-    auto userPipeline = std::move(pipeline);
-    pipeline = Pipeline::parse(aggExState.getResolvedView()->getPipeline(), expCtx);
-    pipeline->appendPipeline(std::move(userPipeline));
-    return pipeline;
-}
 
 bool checkRetryableWriteAlreadyApplied(const AggExState& aggExState,
                                        rpc::ReplyBuilderInterface* result) {
@@ -226,7 +198,7 @@ bool canOptimizeAwayPipeline(const AggExState& aggExState,
                              const PlanExecutor* exec,
                              bool hasGeoNearStage) {
     return pipeline && exec && !hasGeoNearStage && !aggExState.hasChangeStream() &&
-        pipeline->getSources().empty() &&
+        pipeline->empty() &&
         // For exchange we will create a number of pipelines consisting of a single
         // DocumentSourceExchange stage, so cannot not optimize it away.
         !aggExState.getRequest().getExchange();
@@ -360,7 +332,6 @@ bool getFirstBatch(const AggExState& aggExState,
         aggregation_request_helper::kDefaultBatchSize);
 
     auto curOp = CurOp::get(opCtx);
-    ResourceConsumption::DocumentUnitCounter docUnitsReturned;
 
     bool doRegisterCursor = true;
     bool stashedResult = false;
@@ -432,7 +403,6 @@ bool getFirstBatch(const AggExState& aggExState,
         // If this executor produces a postBatchResumeToken, add it to the cursor response.
         responseBuilder.setPostBatchResumeToken(exec.getPostBatchResumeToken());
         responseBuilder.append(nextDoc);
-        docUnitsReturned.observeOne(nextDoc.objsize());
     }
 
     if (doRegisterCursor) {
@@ -449,9 +419,6 @@ bool getFirstBatch(const AggExState& aggExState,
     } else {
         curOp->debug().cursorExhausted = true;
     }
-
-    auto& metricsCollector = ResourceConsumption::MetricsCollector::get(opCtx);
-    metricsCollector.incrementDocUnitsReturned(curOp->getNS(), docUnitsReturned);
 
     return doRegisterCursor;
 }
@@ -654,8 +621,8 @@ std::vector<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> prepareExecuto
     // Check if the pipeline has a $geoNear stage, as it will be ripped away during the build query
     // executor phase below (to be replaced with a $geoNearCursorStage later during the executor
     // attach phase).
-    auto hasGeoNearStage = !pipeline->getSources().empty() &&
-        dynamic_cast<DocumentSourceGeoNear*>(pipeline->peekFront());
+    auto hasGeoNearStage =
+        !pipeline->empty() && dynamic_cast<DocumentSourceGeoNear*>(pipeline->peekFront());
 
     // Prepare a PlanExecutor to provide input into the pipeline, if needed. Add additional
     // executors if needed to serve the aggregation (currently only includes search commands
@@ -806,69 +773,46 @@ void executeExplain(const AggExState& aggExState,
  */
 Status _runAggregate(AggExState& aggExState, rpc::ReplyBuilderInterface* result);
 
-// TODO SERVER-93539 take a ResolvedViewAggExState instead of a AggExState that gets set as a view.
 /**
  * Resolve the view by finding the underlying collection and stitching the view pipelines and this
  * request's pipeline together. We then release our locks before recursively calling runAggregate(),
  * which will re-acquire locks on the underlying collection. (The lock must be released because
  * recursively acquiring locks on the database will prohibit yielding.)
  */
-Status runAggregateOnView(AggExState& aggExState,
+Status runAggregateOnView(ResolvedViewAggExState& resolvedViewAggExState,
                           std::unique_ptr<AggCatalogState> aggCatalogState,
                           rpc::ReplyBuilderInterface* result) {
     uassert(ErrorCodes::CommandNotSupportedOnView,
             "mapReduce on a view is not supported",
-            !aggExState.getRequest().getIsMapReduceCommand());
+            !resolvedViewAggExState.getRequest().getIsMapReduceCommand());
 
-    // TODO SERVER-101661 Enable $rankFusion run on views.
-    uassert(ErrorCodes::CommandNotSupportedOnView,
-            "$rankFusion is currently unsupported on views",
-            !aggExState.isRankFusionStage());
-
-    // Resolve the request's collation and check that the default collation of 'view' is compatible
-    // with the operation's collation. The collation resolution and check are both skipped if the
-    // request did not specify a collation.
-    tassert(10240800, "Expected a view", aggCatalogState->getMainCollectionOrView().isView());
-    const auto& view = aggCatalogState->getMainCollectionOrView().getView();
-    const auto& viewDefinition = view.getViewDefinition();
-
-    if (!aggExState.getRequest().getCollation().get_value_or(BSONObj()).isEmpty()) {
-        auto [collatorToUse, collatorToUseMatchesDefault] = aggCatalogState->resolveCollator();
-        if (!CollatorInterface::collatorsMatch(viewDefinition.defaultCollator(),
-                                               collatorToUse.get()) &&
-            !viewDefinition.timeseries()) {
-            return {ErrorCodes::OptionNotSupportedOnView,
-                    "Cannot override a view's default collation"};
-        }
-    }
-
-    aggExState.setView(aggCatalogState, viewDefinition);
     // Resolved view will be available after view has been set on AggregationExecutionState
-    auto resolvedView = aggExState.getResolvedView().value();
+    auto resolvedView = resolvedViewAggExState.getResolvedView();
 
     // With the view & collation resolved, we can relinquish locks.
     aggCatalogState->relinquishResources();
 
+    OperationContext* opCtx = resolvedViewAggExState.getOpCtx();
+    auto& originalNss = resolvedViewAggExState.getOriginalNss();
+
     auto status{Status::OK()};
-    if (!OperationShardingState::get(aggExState.getOpCtx())
-             .shouldBeTreatedAsFromRouter(aggExState.getOpCtx())) {
+    if (!OperationShardingState::get(opCtx).shouldBeTreatedAsFromRouter(opCtx)) {
         // Non sharding-aware operation.
         // Run the translated query on the view on this node.
-        status = _runAggregate(aggExState, result);
+        status = _runAggregate(resolvedViewAggExState, result);
     } else {
         // Sharding-aware operation.
 
         // Stash the shard role for the resolved view nss, in case it was set, as we are about to
         // transition into the router role for it.
-        const ScopedStashShardRole scopedUnsetShardRole{aggExState.getOpCtx(),
-                                                        resolvedView.getNamespace()};
+        const ScopedStashShardRole scopedUnsetShardRole{opCtx, resolvedView.getNamespace()};
 
-        sharding::router::CollectionRouter router(aggExState.getOpCtx()->getServiceContext(),
+        sharding::router::CollectionRouter router(opCtx->getServiceContext(),
                                                   resolvedView.getNamespace(),
                                                   false  // retryOnStaleShard=false
         );
         status = router.route(
-            aggExState.getOpCtx(),
+            opCtx,
             "runAggregateOnView",
             [&](OperationContext* opCtx, const CollectionRoutingInfo& cri) {
                 // TODO: SERVER-77402 Use a ShardRoleLoop here and remove this usage of
@@ -877,12 +821,12 @@ Status runAggregateOnView(AggExState& aggExState,
                 // Setup the opCtx's OperationShardingState with the expected placement versions for
                 // the underlying collection. Use the same 'placementConflictTime' from the original
                 // request, if present.
-                const auto scopedShardRole = aggExState.setShardRole(cri);
+                const auto scopedShardRole = resolvedViewAggExState.setShardRole(cri);
 
                 // If the underlying collection is unsharded and is located on this shard, then we
                 // can execute the view aggregation locally. Otherwise, we need to kick-back to the
                 // router.
-                if (!aggExState.canReadUnderlyingCollectionLocally(cri)) {
+                if (!resolvedViewAggExState.canReadUnderlyingCollectionLocally(cri)) {
                     // Cannot execute the resolved aggregation locally. The router must do it.
                     //
                     // Before throwing the kick-back exception, validate the routing table
@@ -902,15 +846,19 @@ Status runAggregateOnView(AggExState& aggExState,
                 }
 
                 // Run the resolved aggregation locally.
-                return _runAggregate(aggExState, result);
+                return _runAggregate(resolvedViewAggExState, result);
             });
     }
 
+    // Set the namespace of the curop back to the view namespace so ctx records stats on this view
+    // namespace on destruction.
     {
-        // Set the namespace of the curop back to the view namespace so ctx records
-        // stats on this view namespace on destruction.
-        stdx::lock_guard<Client> lk(*aggExState.getOpCtx()->getClient());
-        CurOp::get(aggExState.getOpCtx())->setNS(lk, aggExState.getOriginalNss());
+        // It's possible this resolvedViewAggExState will be unusable by the time _runAggregate
+        // returns, so we must use opCtx and originalNss variables instead of trying to retrieve
+        // from resolvedViewAggExState.
+        // TODO SERVER-93536 Clarify ownership of aggExState.
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        CurOp::get(opCtx)->setNS(lk, originalNss);
     }
 
     return status;
@@ -925,12 +873,11 @@ std::unique_ptr<Pipeline, PipelineDeleter> parsePipelineAndRegisterQueryStats(
     // Pipeline::parse() will first check if a view exists directly on the stage specification and
     // if none is found, will then check for the view using the expCtx. As such, it's necessary to
     // add the resolved namespace to the expCtx prior to any call to Pipeline::parse().
-    if (aggExState.getResolvedView()) {
-        search_helpers::checkAndAddResolvedNamespaceForSearch(
-            expCtx,
-            aggExState.getOriginalRequest().getPipeline(),
-            *aggExState.getResolvedView(),
-            aggExState.getOriginalNss());
+    if (aggExState.isView()) {
+        search_helpers::checkAndSetViewOnExpCtx(expCtx,
+                                                aggExState.getOriginalRequest().getPipeline(),
+                                                aggExState.getResolvedView(),
+                                                aggExState.getOriginalNss());
     }
 
     // If we're operating over a view, we first parse just the original user-given request
@@ -941,14 +888,6 @@ std::unique_ptr<Pipeline, PipelineDeleter> parsePipelineAndRegisterQueryStats(
     auto pipeline = Pipeline::parse(requestForQueryStats.getPipeline(), expCtx);
     expCtx->stopExpressionCounters();
 
-    // Register query stats with the pre-optimized pipeline. Exclude queries against collections
-    // with encrypted fields. We still collect query stats on collection-less aggregations.
-    bool hasEncryptedFields = aggCatalogState.lockAcquired() &&
-        aggCatalogState.getMainCollectionOrView().collectionExists() &&
-        aggCatalogState.getMainCollectionOrView()
-            .getCollectionPtr()
-            ->getCollectionOptions()
-            .encryptedFieldConfig;
 
     // Perform the query settings lookup and attach it to 'expCtx'.
     query_shape::DeferredQueryShape deferredShape{[&]() {
@@ -966,7 +905,10 @@ std::unique_ptr<Pipeline, PipelineDeleter> parsePipelineAndRegisterQueryStats(
             aggExState.getOriginalNss(),
             requestForQueryStats.getQuerySettings()));
 
-    if (!hasEncryptedFields) {
+    // Register query stats with the pre-optimized pipeline. Exclude queries with encrypted fields
+    // as indicated by the inclusion of encryptionInformation in the request. We still collect query
+    // stats on collection-less aggregations.
+    if (!aggExState.getRequest().getEncryptionInformation()) {
         // If this is a query over a resolved view, we want to register query stats with the
         // original user-given request and pipeline, rather than the new request generated when
         // resolving the view.
@@ -986,17 +928,16 @@ std::unique_ptr<Pipeline, PipelineDeleter> parsePipelineAndRegisterQueryStats(
             },
             aggExState.hasChangeStream());
 
-        if (aggExState.getRequest().getIncludeQueryStatsMetrics() &&
-            feature_flags::gFeatureFlagQueryStatsDataBearingNodes.isEnabled(
-                serverGlobalParams.featureCompatibility.acquireFCVSnapshot())) {
+        if (aggExState.getRequest().getIncludeQueryStatsMetrics()) {
             CurOp::get(aggExState.getOpCtx())->debug().queryStatsInfo.metricsRequested = true;
         }
     }
 
-    if (aggExState.getResolvedView().has_value()) {
+    if (aggExState.isView()) {
         expCtx->startExpressionCounters();
+        // Knowing that the aggregation is a view, overwrite the pipeline.
         pipeline =
-            handleViewHelper(aggExState, expCtx, std::move(pipeline), aggCatalogState.getUUID());
+            aggExState.handleViewHelper(expCtx, std::move(pipeline), aggCatalogState.getUUID());
         expCtx->stopExpressionCounters();
     }
 
@@ -1161,19 +1102,35 @@ Status _runAggregate(AggExState& aggExState, rpc::ReplyBuilderInterface* result)
         // the view is abstracted out for the users, so we needed to resolve the namespace to
         // get the underlying bucket collection.
         const auto& view = aggCatalogState->getMainCollectionOrView().getView();
+
         bool shouldViewBeExpanded =
             !aggExState.startsWithCollStats() || view.getViewDefinition().timeseries();
         if (shouldViewBeExpanded) {
-            return runAggregateOnView(aggExState, std::move(aggCatalogState), result);
+            // TODO SERVER-101661 Enable $rankFusion run on views.
+            uassert(ErrorCodes::CommandNotSupportedOnView,
+                    "$rankFusion is currently unsupported on views",
+                    !aggExState.isRankFusionStage());
+
+            // "Convert" aggExState into resolvedViewAggExState. Note that this will make the
+            // initial aggExState object unusable.
+            auto resolvedViewAggExState =
+                ResolvedViewAggExState::create(std::move(aggExState), aggCatalogState);
+            if (!resolvedViewAggExState.isOK()) {
+                return resolvedViewAggExState.getStatus();
+            }
+
+            return runAggregateOnView(
+                *resolvedViewAggExState.getValue(), std::move(aggCatalogState), result);
         }
     }
+
 
     rewritePipelineIfTimeseries(aggExState, *aggCatalogState);
 
     boost::intrusive_ptr<ExpressionContext> expCtx = aggCatalogState->createExpressionContext();
 
-    // Create an RAII object that prints useful information about the ExpressionContext in the case
-    // of a tassert or crash.
+    // Create an RAII object that prints useful information about the ExpressionContext in the
+    // case of a tassert or crash.
     ScopedDebugInfo expCtxDiagnostics("ExpCtxDiagnostics",
                                       diagnostic_printers::ExpressionContextPrinter{expCtx});
 
@@ -1219,6 +1176,8 @@ Status runAggregate(
     AggExState aggExState(
         opCtx, request, liteParsedPipeline, cmdObj, privileges, usedExternalDataSources, verbosity);
 
+    // NOTE: It's possible this aggExState will be unusable by the time _runAggregate returns.
+    // TODO SERVER-93536 Clarify ownership of aggExState.
     Status status = _runAggregate(aggExState, result);
 
     // The aggregation pipeline may change the namespace of the curop and we need to set it back to

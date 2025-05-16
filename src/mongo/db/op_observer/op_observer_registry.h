@@ -130,15 +130,6 @@ public:
         }
     }
 
-    void onModifyCollectionShardingIndexCatalog(OperationContext* opCtx,
-                                                const NamespaceString& nss,
-                                                const UUID& uuid,
-                                                BSONObj indexDoc) override {
-        ReservedTimes times{opCtx};
-        for (auto& o : _observers)
-            o->onModifyCollectionShardingIndexCatalog(opCtx, nss, uuid, indexDoc);
-    }
-
     void onCreateIndex(OperationContext* const opCtx,
                        const NamespaceString& nss,
                        const UUID& uuid,
@@ -563,6 +554,18 @@ public:
     void onDropDatabaseMetadata(OperationContext* opCtx, const repl::OplogEntry& op) override {
         for (auto& o : _observers)
             o->onDropDatabaseMetadata(opCtx, op);
+    }
+
+    void onBeginPromotionToShardedCluster(OperationContext* opCtx,
+                                          const repl::OplogEntry& op) override {
+        for (auto& o : _observers)
+            o->onBeginPromotionToShardedCluster(opCtx, op);
+    }
+
+    void onCompletePromotionToShardedCluster(OperationContext* opCtx,
+                                             const repl::OplogEntry& op) override {
+        for (auto& o : _observers)
+            o->onCompletePromotionToShardedCluster(opCtx, op);
     }
 
 private:

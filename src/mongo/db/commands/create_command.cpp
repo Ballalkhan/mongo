@@ -376,6 +376,7 @@ public:
                                       QueryTypeEnum::RangePreviewDeprecated));
 
                 if (!gFeatureFlagQETextSearchPreview.isEnabledUseLastLTSFCVWhenUninitialized(
+                        VersionContext::getDecoration(opCtx),
                         serverGlobalParams.featureCompatibility.acquireFCVSnapshot())) {
                     uassert(9783415,
                             "Cannot create a collection with an encrypted field with query type "
@@ -397,6 +398,8 @@ public:
                             "featureFlagQETextSearchPreview is enabled",
                             !cmd.getEncryptedFields()->getStrEncodeVersion());
                 }
+                EncryptionInformationHelpers::checkPerFieldTagLimitNotExceeded(
+                    cmd.getEncryptedFields().get());
             }
 
             if (auto timeseries = cmd.getTimeseries()) {

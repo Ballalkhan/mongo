@@ -624,6 +624,11 @@ mongo_cc_library(
 )
 
 idl_generator(
+    name = "mirror_maestro_feature_flag_gen",
+    src = "mirror_maestro_feature_flags.idl",
+)
+
+idl_generator(
     name = "mirror_maestro_gen",
     src = "mirror_maestro.idl",
     deps = [
@@ -1037,7 +1042,6 @@ mongo_cc_library(
         "//src/mongo/db/query/client_cursor:cursor_response_idl",
         "//src/mongo/db/query/client_cursor:generic_cursor",
         "//src/mongo/db/repl:read_concern_args",  # TODO(SERVER-93876): Remove.
-        "//src/mongo/db/stats:resource_consumption_metrics",
         "//src/mongo/db/stats:timer_stats",
         "//src/mongo/db/storage:execution_context",
         "//src/mongo/db/storage:prepare_conflict_tracker",
@@ -1101,7 +1105,6 @@ mongo_cc_library(
         "//src/mongo/db/catalog:collection_options",
         "//src/mongo/db/collection_crud",
         "//src/mongo/db/concurrency:exception_util",
-        "//src/mongo/db/stats:resource_consumption_metrics",
         "//src/mongo/util/concurrency:spin_lock",
     ],
 )
@@ -1356,7 +1359,6 @@ mongo_cc_library(
         "//src/mongo/db/sorter:sorter_base",
         "//src/mongo/db/sorter:sorter_stats",
         "//src/mongo/db/stats:latency_server_stats",
-        "//src/mongo/db/stats:resource_consumption_metrics",
         "//src/mongo/db/stats:serveronly_stats",
         "//src/mongo/db/storage:record_store_base",
         "//src/mongo/db/storage:storage_options",
@@ -1364,6 +1366,7 @@ mongo_cc_library(
         "//src/mongo/db/timeseries:timeseries_options",
         "//src/mongo/db/timeseries:timeseries_write_util",
         "//src/mongo/db/timeseries/bucket_catalog",
+        "//src/mongo/db/timeseries/write_ops:timeseries_write_ops_utils",
         "//src/mongo/db/update:update_driver",
         "//src/mongo/scripting",
         "//src/mongo/util:background_job",
@@ -1646,7 +1649,6 @@ mongo_cc_library(
         "//src/mongo/db/auth",
         "//src/mongo/db/auth:authprivilege",  # TODO(SERVER-93876): Remove.
         "//src/mongo/db/repl:repl_coordinator_interface",
-        "//src/mongo/transport:transport_layer_common",  # TODO(SERVER-93876): Remove.
     ],
 )
 
@@ -1797,6 +1799,7 @@ mongo_cc_library(
         "index_names.cpp",
         "keypattern.cpp",
         "logical_time.cpp",
+        "mirror_maestro_feature_flag_gen",
         "namespace_string.cpp",
         "read_write_concern_provenance.cpp",
         "server_options.cpp",
@@ -3196,7 +3199,6 @@ mongo_cc_library(
         "//src/mongo/db/stats:api_version_metrics",
         "//src/mongo/db/stats:counters",
         "//src/mongo/db/stats:read_preference_metrics",
-        "//src/mongo/db/stats:resource_consumption_metrics",
         "//src/mongo/db/stats:server_read_concern_write_concern_metrics",
         "//src/mongo/db/stats:top",
         "//src/mongo/db/storage:storage_engine_common",
@@ -3561,7 +3563,6 @@ mongo_cc_library(
         "//src/mongo/db/s:query_analysis_writer",
         "//src/mongo/db/s:sessions_collection_config_server",
         "//src/mongo/db/s:sharding_commands_d",
-        "//src/mongo/db/s:sharding_runtime_d",
         "serverinit",
         "service_context_d",
         "//src/mongo/db/session:kill_sessions_local",
@@ -3852,7 +3853,6 @@ mongo_cc_unit_test(
         "hasher_test.cpp",
         "namespace_string_test.cpp",
         "operation_id_test.cpp",
-        "record_id_test.cpp",
         "server_options_test.cpp",
         "shard_id_test.cpp",
         "startup_warnings_mongod_thp_test.cpp",
@@ -3866,7 +3866,6 @@ mongo_cc_unit_test(
         "commands",
         "error_labels",
         "mongohasher",
-        "record_id_helpers",
         "server_options_base",
         "server_options_servers",
         "service_context_test_fixture",
@@ -3876,6 +3875,20 @@ mongo_cc_unit_test(
         "//src/mongo/db/storage/wiredtiger:storage_wiredtiger",
         "//src/mongo/idl:server_parameter_test_util",
         "//src/third_party/asio-master:asio",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "record_id_test",
+    srcs = [
+        "record_id_test.cpp",
+    ],
+    tags = [
+        "mongo_unittest_sixth_group",
+        "server-storage-engine-integration",
+    ],
+    deps = [
+        "record_id_helpers",
     ],
 )
 

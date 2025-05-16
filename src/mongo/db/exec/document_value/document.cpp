@@ -30,7 +30,7 @@
 #include "mongo/db/exec/document_value/document.h"
 
 #include <absl/container/node_hash_map.h>
-#include <boost/container_hash/extensions.hpp>
+#include <boost/functional/hash.hpp>
 #include <boost/move/utility_core.hpp>
 #include <boost/none.hpp>
 #include <cstdint>
@@ -294,7 +294,7 @@ template Value& DocumentStorage::appendField<StringData>(StringData, ValueElemen
 template Value& DocumentStorage::appendField<HashedFieldName>(HashedFieldName, ValueElement::Kind);
 
 // Call after adding field to _fields and increasing _numFields
-template <typename T>
+template <AnyFieldNameTypeButStdString T>
 void DocumentStorage::addFieldToHashTable(T field, Position pos) {
     ValueElement& elem = getField(pos);
     elem.nextCollision = Position();
@@ -552,7 +552,7 @@ Document::Document(std::initializer_list<std::pair<StringData, ImplicitValue>> i
     *this = mutableDoc.freeze();
 }
 
-Document::Document(std::vector<std::pair<StringData, Value>> fields) {
+Document::Document(const std::vector<std::pair<StringData, Value>>& fields) {
     MutableDocument mutableDoc(fields.size());
     for (auto&& pair : fields)
         mutableDoc.addField(pair.first, pair.second);

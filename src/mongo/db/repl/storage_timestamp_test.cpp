@@ -258,13 +258,33 @@ Status createIndexFromSpec(OperationContext* opCtx,
     return Status::OK();
 }
 
+CollectionAcquisition acquireCollForRead(OperationContext* opCtx, const NamespaceString& nss) {
+    return acquireCollection(
+        opCtx,
+        CollectionAcquisitionRequest(nss,
+                                     PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                     repl::ReadConcernArgs::get(opCtx),
+                                     AcquisitionPrerequisites::kRead),
+        MODE_IS);
+}
+
 /**
  * RAII type for operating at a timestamp. Will remove any timestamping when the object destructs.
  */
 class OneOffRead {
 public:
-    OneOffRead(OperationContext* opCtx, const Timestamp& ts) : _opCtx(opCtx) {
+    OneOffRead(OperationContext* opCtx, const Timestamp& ts, bool waitForOplog = false)
+        : _opCtx(opCtx) {
         shard_role_details::getRecoveryUnit(_opCtx)->abandonSnapshot();
+        if (waitForOplog) {
+            auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
+            LocalOplogInfo* oplogInfo = LocalOplogInfo::get(opCtx);
+
+            // Oplog should be available in this test.
+            invariant(oplogInfo);
+            storageEngine->waitForAllEarlierOplogWritesToBeVisible(opCtx,
+                                                                   oplogInfo->getRecordStore());
+        }
         if (ts.isNull()) {
             shard_role_details::getRecoveryUnit(_opCtx)->setTimestampReadSource(
                 RecoveryUnit::ReadSource::kNoTimestamp);
@@ -415,11 +435,11 @@ public:
     }
 
     void dumpOplog() {
-        OneOffRead oor(_opCtx, Timestamp::min());
+        OneOffRead oor(_opCtx, Timestamp::min(), true /* waitForOplog */);
         shard_role_details::getRecoveryUnit(_opCtx)->beginUnitOfWork(_opCtx->readOnly());
         LOGV2(8423335, "Dumping oplog collection");
-        AutoGetCollectionForRead oplogRaii(_opCtx, NamespaceString::kRsOplogNamespace);
-        const CollectionPtr& oplogColl = oplogRaii.getCollection();
+        const auto oplogCollAcq = acquireCollForRead(_opCtx, NamespaceString::kRsOplogNamespace);
+        const CollectionPtr& oplogColl = oplogCollAcq.getCollectionPtr();
         auto oplogRs = oplogColl->getRecordStore();
         auto oplogCursor = oplogRs->getCursor(_opCtx);
 
@@ -556,18 +576,18 @@ public:
     BSONObj queryCollection(NamespaceString nss, const BSONObj& query) {
         BSONObj ret;
         ASSERT_TRUE(Helpers::findOne(
-            _opCtx, AutoGetCollectionForRead(_opCtx, nss).getCollection(), query, ret))
+            _opCtx, acquireCollForRead(_opCtx, nss).getCollectionPtr(), query, ret))
             << "Query: " << query;
         return ret;
     }
 
     BSONObj queryOplog(const BSONObj& query) {
-        OneOffRead oor(_opCtx, Timestamp::min());
+        OneOffRead oor(_opCtx, Timestamp::min(), true /* waitForOplog */);
         return queryCollection(NamespaceString::kRsOplogNamespace, query);
     }
 
     Timestamp getTopOfOplog() {
-        OneOffRead oor(_opCtx, Timestamp::min());
+        OneOffRead oor(_opCtx, Timestamp::min(), true /* waitForOplog */);
         BSONObj ret;
         ASSERT_TRUE(Helpers::getLast(_opCtx, NamespaceString::kRsOplogNamespace, ret));
         return ret["ts"].timestamp();
@@ -634,11 +654,11 @@ public:
     void assertOplogDocumentExistsAtTimestamp(const BSONObj& query,
                                               const Timestamp& ts,
                                               bool exists) {
-        OneOffRead oor(_opCtx, ts);
+        OneOffRead oor(_opCtx, ts, true);
         BSONObj ret;
         bool found = Helpers::findOne(
             _opCtx,
-            AutoGetCollectionForRead(_opCtx, NamespaceString::kRsOplogNamespace).getCollection(),
+            acquireCollForRead(_opCtx, NamespaceString::kRsOplogNamespace).getCollectionPtr(),
             query,
             ret);
         ASSERT_EQ(found, exists) << "Found " << ret << " at " << ts.toBSON();
@@ -1526,11 +1546,11 @@ TEST_F(StorageTimestampTest, SecondarySetWildcardIndexMultikeyOnInsert) {
 
     uassertStatusOK(oplogApplier.applyOplogBatch(_opCtx, ops));
 
-    AutoGetCollectionForRead autoColl(_opCtx, nss);
+    const auto coll = acquireCollForRead(_opCtx, nss);
     auto wildcardIndexDescriptor =
-        autoColl.getCollection()->getIndexCatalog()->findIndexByName(_opCtx, indexName);
+        coll.getCollectionPtr()->getIndexCatalog()->findIndexByName(_opCtx, indexName);
     const IndexCatalogEntry* entry =
-        autoColl.getCollection()->getIndexCatalog()->getEntry(wildcardIndexDescriptor);
+        coll.getCollectionPtr()->getIndexCatalog()->getEntry(wildcardIndexDescriptor);
     {
         // Verify that, even though op2 was applied first, the multikey state is observed in all
         // WiredTiger transactions that can contain the data written by op1.
@@ -1619,11 +1639,11 @@ TEST_F(StorageTimestampTest, SecondarySetWildcardIndexMultikeyOnUpdate) {
 
     uassertStatusOK(oplogApplier.applyOplogBatch(_opCtx, ops));
 
-    AutoGetCollectionForRead autoColl(_opCtx, nss);
+    const auto coll = acquireCollForRead(_opCtx, nss);
     auto wildcardIndexDescriptor =
-        autoColl.getCollection()->getIndexCatalog()->findIndexByName(_opCtx, indexName);
+        coll.getCollectionPtr()->getIndexCatalog()->findIndexByName(_opCtx, indexName);
     const IndexCatalogEntry* entry =
-        autoColl.getCollection()->getIndexCatalog()->getEntry(wildcardIndexDescriptor);
+        coll.getCollectionPtr()->getIndexCatalog()->getEntry(wildcardIndexDescriptor);
     {
         // Verify that, even though op2 was applied first, the multikey state is observed in all
         // WiredTiger transactions that can contain the data written by op1.
@@ -2228,20 +2248,21 @@ TEST_F(StorageTimestampTest, TimestampMultiIndexBuilds) {
     // Assert that the index build is removed from config.system.indexBuilds collection after
     // completion.
     {
-        AutoGetCollectionForRead collection(_opCtx, NamespaceString::kIndexBuildEntryNamespace);
-        ASSERT_TRUE(collection);
+        const auto collection =
+            acquireCollForRead(_opCtx, NamespaceString::kIndexBuildEntryNamespace);
+        ASSERT_TRUE(collection.exists());
 
         // At the commitIndexBuild entry time, the index build be still be present in the
         // indexBuilds collection.
         {
             OneOffRead oor(_opCtx, indexBComplete);
             // Fails if the collection is empty.
-            findOne(collection.getCollection());
+            findOne(collection.getCollectionPtr());
         }
 
         // After the index build has finished, we should not see the doc in the indexBuilds
         // collection.
-        ASSERT_EQUALS(0, itCount(collection.getCollection()));
+        ASSERT_EQUALS(0, itCount(collection.getCollectionPtr()));
     }
 }
 
@@ -2448,20 +2469,21 @@ TEST_F(StorageTimestampTest, TimestampAbortIndexBuild) {
     // Assert that the index build is removed from config.system.indexBuilds collection after
     // completion.
     {
-        AutoGetCollectionForRead collection(_opCtx, NamespaceString::kIndexBuildEntryNamespace);
-        ASSERT_TRUE(collection);
+        const auto collection =
+            acquireCollForRead(_opCtx, NamespaceString::kIndexBuildEntryNamespace);
+        ASSERT_TRUE(collection.exists());
 
         // At the commitIndexBuild entry time, the index build be still be present in the
         // indexBuilds collection.
         {
             OneOffRead oor(_opCtx, indexAbortTs);
             // Fails if the collection is empty.
-            findOne(collection.getCollection());
+            findOne(collection.getCollectionPtr());
         }
 
         // After the index build has finished, we should not see the doc in the indexBuilds
         // collection.
-        ASSERT_EQUALS(0, itCount(collection.getCollection()));
+        ASSERT_EQUALS(0, itCount(collection.getCollectionPtr()));
     }
 }
 

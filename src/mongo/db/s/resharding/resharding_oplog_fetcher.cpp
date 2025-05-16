@@ -97,6 +97,7 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/duration.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/out_of_line_executor.h"
 #include "mongo/util/string_map.h"
@@ -106,6 +107,9 @@
 
 namespace mongo {
 namespace {
+
+MONGO_FAIL_POINT_DEFINE(pauseReshardingOplogFetcherAfterConsuming);
+
 boost::intrusive_ptr<ExpressionContext> _makeExpressionContext(OperationContext* opCtx) {
     ResolvedNamespaceMap resolvedNamespaces;
     resolvedNamespaces[NamespaceString::kRsOplogNamespace] = {NamespaceString::kRsOplogNamespace,
@@ -303,6 +307,15 @@ ExecutorFuture<void> ReshardingOplogFetcher::_reschedule(
     std::shared_ptr<executor::TaskExecutor> executor, const CancellationToken& cancelToken) {
     return ExecutorFuture(executor)
         .then([this, executor, cancelToken] {
+            if (_startAt == kFinalOpAlreadyFetched) {
+                LOGV2_INFO(10355401,
+                           "Not rescheduling resharding oplog fetcher since there is no "
+                           "more work to do",
+                           "donorShard"_attr = _donorShard,
+                           "reshardingUUID"_attr = _reshardingUUID);
+                return false;
+            }
+
             // TODO(SERVER-74658): Please revisit if this thread could be made killable.
             ThreadClient client(fmt::format("OplogFetcher-{}-{}",
                                             _reshardingUUID.toString(),
@@ -432,7 +445,8 @@ AggregateCommandRequest ReshardingOplogFetcher::_makeAggregateCommandRequest(
         aggRequest.setReadConcern(readConcernArgs);
     }
 
-    auto readPref = _inCriticalSection.load()
+    auto readPref = _inCriticalSection.load() &&
+            resharding::gReshardingOplogFetcherTargetPrimaryDuringCriticalSection.load()
         ? ReadPreferenceSetting{ReadPreference::PrimaryOnly}
         : ReadPreferenceSetting{ReadPreference::Nearest,
                                 ReadPreferenceSetting::kMinimalMaxStalenessValue};
@@ -523,11 +537,15 @@ bool ReshardingOplogFetcher::consume(Client* client,
                 auto [p, f] = makePromiseFuture<void>();
                 {
                     stdx::lock_guard lk(_mutex);
-                    _startAt = insertBatch.startAt;
+                    _startAt = insertBatch.moreToCome
+                        ? insertBatch.startAt
+                        : ReshardingOplogFetcher::kFinalOpAlreadyFetched;
                     _onInsertPromise.emplaceValue();
                     _onInsertPromise = std::move(p);
                     _onInsertFuture = std::move(f);
                 }
+
+                pauseReshardingOplogFetcherAfterConsuming.pauseWhileSet(opCtx);
 
                 if (!insertBatch.moreToCome) {
                     moreToCome = false;
@@ -606,7 +624,8 @@ void ReshardingOplogFetcher::onEnteringCriticalSection() {
     _inCriticalSection.store(true);
     stdx::lock_guard lk(_mutex);
     // Stop consuming the current aggregation and start a new one.
-    if (_aggCancelSource) {
+    if (resharding::gReshardingOplogFetcherTargetPrimaryDuringCriticalSection.load() &&
+        _aggCancelSource) {
         _aggCancelSource->cancel();
     }
 }

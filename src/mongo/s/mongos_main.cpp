@@ -77,7 +77,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/process_health/fault_manager.h"
 #include "mongo/db/profile_filter_impl.h"
-#include "mongo/db/query/query_settings/query_settings_service.h"
 #include "mongo/db/query/search/mongot_options.h"
 #include "mongo/db/query/search/search_task_executors.h"
 #include "mongo/db/read_write_concern_defaults.h"
@@ -489,34 +488,8 @@ void cleanupTask(const ShutdownTaskArgs& shutdownArgs) {
             validator->shutDown();
         }
 
-        if (auto cursorManager = Grid::get(opCtx)->getCursorManager()) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownCursorManager,
-                                           &shutdownTimeElapsedBuilder);
-            cursorManager->shutdown(opCtx);
-        }
-
-        if (auto pool = Grid::get(opCtx)->getExecutorPool()) {
-            LOGV2_OPTIONS(7698300, {LogComponent::kSharding}, "Shutting down the ExecutorPool");
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownExecutorPool,
-                                           &shutdownTimeElapsedBuilder);
-            pool->shutdownAndJoin();
-        }
-
-        if (auto shardRegistry = Grid::get(opCtx)->shardRegistry()) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownShardRegistry,
-                                           &shutdownTimeElapsedBuilder);
-            shardRegistry->shutdown();
-        }
-
-        if (Grid::get(serviceContext)->isShardingInitialized()) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownCatalogCache,
-                                           &shutdownTimeElapsedBuilder);
-            LOGV2_OPTIONS(7698301, {LogComponent::kSharding}, "Shutting down the CatalogCache");
-            Grid::get(serviceContext)->catalogCache()->shutDownAndJoin();
+        if (auto grid = Grid::get(opCtx)) {
+            grid->shutdown(opCtx, &shutdownTimeElapsedBuilder, true /* isMongos */);
         }
 
         {
@@ -810,7 +783,6 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
     ReadWriteConcernDefaults::create(serviceContext->getService(ClusterRole::RouterServer),
                                      readWriteConcernDefaultsCacheLookupMongoS);
     ChangeStreamOptionsManager::create(serviceContext);
-    query_settings::initializeForRouter(serviceContext);
 
     auto opCtxHolder = tc->makeOperationContext();
     auto const opCtx = opCtxHolder.get();

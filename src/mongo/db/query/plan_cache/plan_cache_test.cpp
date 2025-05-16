@@ -2163,7 +2163,7 @@ TEST_F(CachePlanSelectionTest, RecoveredSolutionWithMatchExpressionHasTaggedMatc
     // Ensure that the taggedMatchExpressionHash is set. Since the index order can change, we cannot
     // assert that bestSoln->taggedMatchExpressionHash == planSoln->taggedMatchExpressionHash, just
     // that planSoln->taggedMatchExpressionHash is set to something.
-    ASSERT_NE(0, planSoln->taggedMatchExpressionHash);
+    ASSERT_EQ(bestSoln->taggedMatchExpressionHash, planSoln->taggedMatchExpressionHash);
 }
 
 /**
@@ -2174,14 +2174,15 @@ protected:
     void setUp() override {
         _queryTestServiceContext = std::make_unique<QueryTestServiceContext>();
         _operationContext = _queryTestServiceContext->makeOperationContext();
-        _collection = std::make_unique<CollectionMock>(_nss);
-        // TODO(SERVER-103405): Investigate usage validity of CollectionPtr::CollectionPtr_UNSAFE
-        _collectionPtr = CollectionPtr::CollectionPtr_UNSAFE(_collection.get());
+        auto collection = std::make_shared<CollectionMock>(_nss);
+        auto catalog = CollectionCatalog::get(_operationContext.get());
+        catalog->onCreateCollection(_operationContext.get(), collection);
+        _collectionPtr = CollectionPtr(catalog->establishConsistentCollection(
+            _operationContext.get(), _nss, boost::none /* readTimestamp */));
     }
 
     void tearDown() override {
         _collectionPtr.reset();
-        _collection.reset();
         _operationContext.reset();
         _queryTestServiceContext.reset();
     }
@@ -2260,7 +2261,6 @@ private:
     std::unique_ptr<QueryTestServiceContext> _queryTestServiceContext;
 
     ServiceContext::UniqueOperationContext _operationContext;
-    std::unique_ptr<Collection> _collection;
     CollectionPtr _collectionPtr;
 };
 

@@ -114,7 +114,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/shard_role.h"
 #include "mongo/db/stats/counters.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/db/stats/server_write_concern_metrics.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/storage/duplicate_key_error_info.h"
@@ -887,14 +886,6 @@ UpdateResult performUpdate(OperationContext* opCtx,
         curOp->debug().execStats = std::move(stats);
     }
 
-    if (docFound) {
-        ResourceConsumption::DocumentUnitCounter docUnitsReturned;
-        docUnitsReturned.observeOne(docFound->objsize());
-
-        auto& metricsCollector = ResourceConsumption::MetricsCollector::get(opCtx);
-        metricsCollector.incrementDocUnitsReturned(curOp->getNS(), docUnitsReturned);
-    }
-
     CurOpFailpointHelpers::waitWhileFailPointEnabled(
         &hangAfterBatchUpdate, opCtx, "hangAfterBatchUpdate");
 
@@ -1026,14 +1017,6 @@ long long performDelete(OperationContext* opCtx,
         auto&& explainer = exec->getPlanExplainer();
         auto&& [stats, _] = explainer.getWinningPlanStats(ExplainOptions::Verbosity::kExecStats);
         curOp->debug().execStats = std::move(stats);
-    }
-
-    if (docFound) {
-        ResourceConsumption::DocumentUnitCounter docUnitsReturned;
-        docUnitsReturned.observeOne(docFound->objsize());
-
-        auto& metricsCollector = ResourceConsumption::MetricsCollector::get(opCtx);
-        metricsCollector.incrementDocUnitsReturned(curOp->getNS(), docUnitsReturned);
     }
 
     return nDeleted;
@@ -2228,7 +2211,7 @@ bool shouldRetryDuplicateKeyException(OperationContext* opCtx,
         return false;
     }
 
-    auto keyPattern = errorInfo.getKeyPattern();
+    const auto& keyPattern = errorInfo.getKeyPattern();
     if (equalities.size() != static_cast<size_t>(keyPattern.nFields())) {
         return false;
     }
@@ -2250,7 +2233,7 @@ bool shouldRetryDuplicateKeyException(OperationContext* opCtx,
         }
     }
 
-    auto keyValue = errorInfo.getDuplicatedKeyValue();
+    const auto& keyValue = errorInfo.getDuplicatedKeyValue();
 
     BSONObjIterator keyPatternIter(keyPattern);
     BSONObjIterator keyValueIter(keyValue);

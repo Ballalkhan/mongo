@@ -54,10 +54,9 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/op_msg.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/cluster_commands_helpers.h"
-#include "mongo/s/grid.h"
+#include "mongo/s/router_role.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/str.h"
@@ -96,30 +95,32 @@ public:
         void typedRun(OperationContext* opCtx) {
             const NamespaceString& nss = ns();
 
-            auto cri = uassertStatusOK(
-                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-
             auto& cmd = request();
             setReadWriteConcern(opCtx, cmd, this);
-            auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
-                opCtx,
-                nss,
-                cri,
-                CommandHelpers::filterCommandRequestForPassthrough(cmd.toBSON()),
-                ReadPreferenceSetting::get(opCtx),
-                Shard::RetryPolicy::kIdempotent,
-                BSONObj() /*query*/,
-                BSONObj() /*collation*/,
-                boost::none /*letParameters*/,
-                boost::none /*runtimeConstants*/);
 
-            for (const auto& shardResult : shardResponses) {
-                const auto& shardResponse = uassertStatusOK(std::move(shardResult.swResponse));
+            routing_context_utils::withValidatedRoutingContext(
+                opCtx, {nss}, [&](RoutingContext& routingCtx) {
+                    auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
+                        opCtx,
+                        nss,
+                        routingCtx,
+                        CommandHelpers::filterCommandRequestForPassthrough(cmd.toBSON()),
+                        ReadPreferenceSetting::get(opCtx),
+                        Shard::RetryPolicy::kIdempotent,
+                        BSONObj() /*query*/,
+                        BSONObj() /*collation*/,
+                        boost::none /*letParameters*/,
+                        boost::none /*runtimeConstants*/);
 
-                uassertStatusOK(shardResponse.status);
+                    for (const auto& shardResult : shardResponses) {
+                        const auto& shardResponse =
+                            uassertStatusOK(std::move(shardResult.swResponse));
 
-                uassertStatusOK(getStatusFromCommandResult(shardResponse.data));
-            }
+                        uassertStatusOK(shardResponse.status);
+
+                        uassertStatusOK(getStatusFromCommandResult(shardResponse.data));
+                    }
+                });
         }
 
     private:

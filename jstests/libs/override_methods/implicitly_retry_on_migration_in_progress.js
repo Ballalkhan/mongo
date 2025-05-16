@@ -3,6 +3,7 @@
  * codes automatically retry.
  */
 
+import {getCollectionNameFromFullNamespace} from "jstests/libs/namespace_utils.js";
 import {OverrideHelpers} from "jstests/libs/override_methods/override_helpers.js";
 
 // Values in msecs.
@@ -19,7 +20,6 @@ function _runAndExhaustQueryWithRetryUponMigration(
 
     let queryResponse;
     let attempt = 0;
-    const collName = commandObj[commandName];
     const lsid = commandObj['lsid'];
     const apiVersion = commandObj['apiVersion'];
     const apiStrict = commandObj['apiStrict'];
@@ -27,10 +27,15 @@ function _runAndExhaustQueryWithRetryUponMigration(
     assert.soon(
         () => {
             attempt++;
+
             queryResponse = func.apply(conn, makeFuncArgs(commandObj));
             let latestBatchResponse = queryResponse;
+
             while (latestBatchResponse.ok === 1 && latestBatchResponse.cursor &&
                    latestBatchResponse.cursor.id != 0) {
+                const ns = queryResponse.cursor.ns;
+                const collName = getCollectionNameFromFullNamespace(ns);
+
                 // Exhaust the cursor returned by the command and return to the test a single batch
                 // containing all the results.
                 const getMoreCommandObj = {
@@ -40,6 +45,10 @@ function _runAndExhaustQueryWithRetryUponMigration(
                     apiVersion: apiVersion,
                     apiStrict: apiStrict,
                 };
+
+                // We're not propagating the `txnNumber` parameter to the getMore command because
+                // this function is never called when the query is part of a transaction.
+
                 latestBatchResponse = func.apply(conn, makeFuncArgs(getMoreCommandObj));
 
                 if (latestBatchResponse.ok === 1) {
@@ -70,15 +79,7 @@ function _runAndExhaustQueryWithRetryUponMigration(
     return queryResponse;
 }
 
-function _runCommandWithRetryUponMigration(conn, commandName, commandObj, func, makeFuncArgs) {
-    // These are all commands that can return BackgroundOperationInProgress error codes.
-    const kRetryableCommands = new Set([
-        "createIndexes",
-        "moveCollection",
-        "reshardCollection",
-        "unshardCollection",
-    ]);
-
+function _runDDLCommandWithRetryUponMigration(conn, commandName, commandObj, func, makeFuncArgs) {
     const kCommandRetryableErrors =
         [ErrorCodes.ReshardCollectionInProgress, ErrorCodes.ConflictingOperationInProgress];
 
@@ -97,11 +98,6 @@ function _runCommandWithRetryUponMigration(conn, commandName, commandObj, func, 
                 return kNoRetry;
             }
 
-            // Commands that are not in the allowlist should never fail with this error code.
-            if (!kRetryableCommands.has(commandName)) {
-                return kNoRetry;
-            }
-
             let message = "Retrying the " + commandName +
                 " command because a migration operation is in progress (attempt " + attempt +
                 "): " + tojson(commandResponse);
@@ -113,7 +109,7 @@ function _runCommandWithRetryUponMigration(conn, commandName, commandObj, func, 
                 return kRetry;
             }
 
-            jsTestLog("done retrying " + commandName);
+            jsTestLog("Done retrying " + commandName);
             return kNoRetry;
         },
         () => "Timed out while retrying command '" + tojson(commandObj) +
@@ -126,23 +122,38 @@ function _runCommandWithRetryUponMigration(conn, commandName, commandObj, func, 
 
 function runCommandWithRetryUponMigration(
     conn, dbName, commandName, commandObj, func, makeFuncArgs) {
-    const kQueryCommands = ['find', 'aggregate', 'listIndexes'];
+    // These are the query commands that will be retried when failing due to a concurrent chunk or
+    // collection migrations.
+    const kQueryCommands = new Set(['find', 'aggregate', 'listIndexes', 'count', 'distinct']);
+
+    // These are the DDL commands that can return BackgroundOperationInProgress error codes due to
+    // concurrent chunk or collection migrations.
+    const kRetryableDDLCommands = new Set([
+        "createIndexes",
+        "moveCollection",
+        "reshardCollection",
+        "unshardCollection",
+    ]);
 
     if (typeof commandObj !== "object" || commandObj === null) {
         return func.apply(conn, makeFuncArgs(commandObj));
     }
 
-    const inTransaction = commandObj.hasOwnProperty("autocommit");
+    // A transaction can either be issued by the test file or injected by a suite override.
+    const inTransaction = commandObj.hasOwnProperty("autocommit") ||
+        (TestData.networkErrorAndTxnOverrideConfig &&
+         TestData.networkErrorAndTxnOverrideConfig.wrapCRUDinTransactions);
 
-    if (!inTransaction && kQueryCommands.includes(commandName)) {
+    if (!inTransaction && kQueryCommands.has(commandName)) {
         return _runAndExhaustQueryWithRetryUponMigration(
             conn, commandName, commandObj, func, makeFuncArgs);
+
+    } else if (kRetryableDDLCommands.has(commandName)) {
+        return _runDDLCommandWithRetryUponMigration(
+            conn, commandName, commandObj, func, makeFuncArgs);
+
     } else {
-        // The expectation for tests running under this override method is that they cannot issue a
-        // 'getMore' request, since any cursor-generating request should be served through
-        // _runAndExhaustQueryWithRetryUponMigration().
-        assert(commandName !== 'getMore' || inTransaction, 'Unexpected getMore received');
-        return _runCommandWithRetryUponMigration(conn, commandName, commandObj, func, makeFuncArgs);
+        return func.apply(conn, makeFuncArgs(commandObj));
     }
 }
 

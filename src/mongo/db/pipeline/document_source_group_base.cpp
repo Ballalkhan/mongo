@@ -135,6 +135,10 @@ Value DocumentSourceGroupBase::serialize(const SerializationOptions& opts) const
             opts.serializeLiteral(static_cast<long long>(stats.spillingStats.getSpilledBytes()));
         out["spilledRecords"] =
             opts.serializeLiteral(static_cast<long long>(stats.spillingStats.getSpilledRecords()));
+        if (feature_flags::gFeatureFlagQueryMemoryTracking.isEnabled()) {
+            out["maxUsedMemBytes"] =
+                opts.serializeLiteral(static_cast<long long>(stats.maxUsedMemoryBytes));
+        }
     }
 
     return out.freezeToValue();
@@ -643,7 +647,7 @@ DocumentSourceGroupBase::pipelineDependentDistributedPlanLogic(
     }
 
     // TODO SERVER-97135: Refactor so we can remove the following check.
-    auto mergeStage = ctx.pipelineSuffix.getSources().empty()
+    auto mergeStage = ctx.pipelineSuffix.empty()
         ? nullptr
         : dynamic_cast<DocumentSourceMerge*>(ctx.pipelineSuffix.getSources().back().get());
     if (mergeStage) {

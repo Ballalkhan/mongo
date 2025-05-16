@@ -246,29 +246,23 @@ bool hasReferenceToSearchMeta(const DocumentSource& ds) {
 }
 
 bool isSearchPipeline(const Pipeline* pipeline) {
-    if (!pipeline || pipeline->getSources().empty()) {
+    if (!pipeline || pipeline->empty()) {
         return false;
     }
     return isSearchStage(pipeline->peekFront());
 }
 
 bool isSearchMetaPipeline(const Pipeline* pipeline) {
-    if (!pipeline || pipeline->getSources().empty()) {
+    if (!pipeline || pipeline->empty()) {
         return false;
     }
     return isSearchMetaStage(pipeline->peekFront());
 }
 
-void addResolvedNamespaceForSearch(const NamespaceString& origNss,
-                                   const ResolvedView& resolvedView,
-                                   boost::intrusive_ptr<ExpressionContext> expCtx) {
-    expCtx->setView(boost::make_optional(std::make_pair(origNss, resolvedView.getPipeline())));
-}
-
-void checkAndAddResolvedNamespaceForSearch(boost::intrusive_ptr<ExpressionContext> expCtx,
-                                           const std::vector<mongo::BSONObj> pipelineObj,
-                                           ResolvedView resolvedView,
-                                           const NamespaceString& viewName) {
+void checkAndSetViewOnExpCtx(boost::intrusive_ptr<ExpressionContext> expCtx,
+                             const std::vector<mongo::BSONObj> pipelineObj,
+                             ResolvedView resolvedView,
+                             const NamespaceString& viewName) {
     auto lpp = LiteParsedPipeline(viewName, pipelineObj);
 
     // Search queries on views behave differently than non-search aggregations on views.
@@ -286,7 +280,7 @@ void checkAndAddResolvedNamespaceForSearch(boost::intrusive_ptr<ExpressionContex
     // view pipeline after idLookup.
     if (expCtx->isFeatureFlagMongotIndexedViewsEnabled() && lpp.hasSearchStage() &&
         !search_helper_bson_obj::isStoredSource(pipelineObj)) {
-        search_helpers::addResolvedNamespaceForSearch(viewName, resolvedView, expCtx);
+        expCtx->setView(boost::make_optional(std::make_pair(viewName, resolvedView.getPipeline())));
     }
 }
 
@@ -306,7 +300,7 @@ bool isStoredSource(const Pipeline* pipeline) {
 }
 
 bool isMongotPipeline(const Pipeline* pipeline) {
-    if (!pipeline || pipeline->getSources().empty()) {
+    if (!pipeline || pipeline->empty()) {
         return false;
     }
     return isMongotStage(pipeline->peekFront());

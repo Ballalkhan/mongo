@@ -27,7 +27,6 @@ mongo_cc_library(
         "simple8b.h",
         "simple8b.inl",
         "simple8b_builder.h",
-        "simple8b_builder.inl",
         "simple8b_helpers.h",
         "simple8b_type_util.h",
         "//src/mongo/util:overloaded_visitor.h",
@@ -106,7 +105,10 @@ mongo_cc_unit_test(
         "simple8b_test.cpp",
         "simple8b_type_util_test.cpp",
     ],
-    tags = ["mongo_unittest_fourth_group"],
+    tags = [
+        "mongo_unittest_fourth_group",
+        "server-bsoncolumn",
+    ],
     deps = [
         ":bson_column_fuzzer_impl",
         ":bsoncolumn_fuzzer_util",

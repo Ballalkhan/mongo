@@ -28,8 +28,6 @@
  */
 
 
-#include "mongo/platform/basic.h"
-
 #include "mongo/util/stacktrace.h"
 
 #pragma warning(push)
@@ -83,7 +81,7 @@ public:
         const auto pathSize = GetModuleFileNameW(nullptr, &modulePath.front(), modulePath.size());
         invariant(pathSize != 0);
         modulePath.resize(pathSize);
-        boost::filesystem::wpath exePath(modulePath);
+        boost::filesystem::path exePath(modulePath);
 
         std::wstringstream symbolPathBuilder;
         symbolPathBuilder << exePath.parent_path().wstring()

@@ -57,6 +57,7 @@
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog_impl.h"
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/catalog/local_oplog_info.h"
 #include "mongo/db/catalog/storage_engine_collection_options_flags_parser.h"
 #include "mongo/db/catalog/uncommitted_multikey.h"
 #include "mongo/db/client.h"
@@ -87,6 +88,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/capped_snapshots.h"
 #include "mongo/db/storage/durable_catalog.h"
+#include "mongo/db/storage/oplog_truncate_markers.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_parameters_gen.h"
 #include "mongo/db/timeseries/timeseries_constants.h"
@@ -521,17 +523,17 @@ void CollectionImpl::_setMetadata(
     if (metadata->options.timeseries) {
         // If present, reuse the storageEngine options to work around the issue described in
         // SERVER-91194.
-        _shared->_durableTimeseriesBucketsMayHaveMixedSchemaData = getFlagFromStorageEngineBson(
+        metadata->_durableTimeseriesBucketsMayHaveMixedSchemaData = getFlagFromStorageEngineBson(
             metadata->options.storageEngine,
             backwards_compatible_collection_options::kTimeseriesBucketsMayHaveMixedSchemaData);
-        if (_shared->_durableTimeseriesBucketsMayHaveMixedSchemaData.has_value()) {
+        if (metadata->_durableTimeseriesBucketsMayHaveMixedSchemaData.has_value()) {
             metadata->timeseriesBucketsMayHaveMixedSchemaData =
-                *_shared->_durableTimeseriesBucketsMayHaveMixedSchemaData;
+                *metadata->_durableTimeseriesBucketsMayHaveMixedSchemaData;
         }
 
         // If present, reuse storageEngine options to work around the issue described in
         // SERVER-91193
-        _shared->_durableTimeseriesBucketingParametersHaveChanged = getFlagFromStorageEngineBson(
+        metadata->_durableTimeseriesBucketingParametersHaveChanged = getFlagFromStorageEngineBson(
             metadata->options.storageEngine,
             backwards_compatible_collection_options::kTimeseriesBucketingParametersHaveChanged);
     }
@@ -701,9 +703,7 @@ Status CollectionImpl::checkValidationAndParseResult(OperationContext* opCtx,
 Collection::Validator CollectionImpl::parseValidator(
     OperationContext* opCtx,
     const BSONObj& validator,
-    MatchExpressionParser::AllowedFeatureSet allowedFeatures,
-    boost::optional<multiversion::FeatureCompatibilityVersion> maxFeatureCompatibilityVersion)
-    const {
+    MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
     if (MONGO_unlikely(allowSettingMalformedCollectionValidators.shouldFail())) {
         return {validator, nullptr, nullptr};
     }
@@ -727,8 +727,6 @@ Collection::Validator CollectionImpl::parseValidator(
                       // The match expression parser needs to know that we're parsing an expression
                       // for a validator to apply some additional checks.
                       .isParsingCollectionValidator(true)
-                      // Enforce a maximum feature version if requested.
-                      .maxFeatureCompatibilityVersion(maxFeatureCompatibilityVersion)
                       .build();
 
     expCtx->variables.setDefaultRuntimeConstants(opCtx);
@@ -816,8 +814,8 @@ bool CollectionImpl::isCappedAndNeedsDelete(OperationContext* opCtx) const {
         return false;
     }
 
-    if (getRecordStore()->oplog() && getRecordStore()->oplog()->selfManagedTruncation()) {
-        // Storage engines can choose to manage oplog truncation internally.
+    if (getRecordStore()->oplog()) {
+        // Oplog truncation is managed through OplogTruncateMarkers.
         return false;
     }
 
@@ -863,12 +861,12 @@ timeseries::MixedSchemaBucketsState CollectionImpl::getTimeseriesMixedSchemaBuck
         return timeseries::MixedSchemaBucketsState::Invalid;
     }
 
-    if (!_shared->_durableTimeseriesBucketsMayHaveMixedSchemaData.has_value() &&
+    if (!_metadata->_durableTimeseriesBucketsMayHaveMixedSchemaData.has_value() &&
         !_metadata->timeseriesBucketsMayHaveMixedSchemaData.has_value()) {
         return timeseries::MixedSchemaBucketsState::Invalid;
     }
 
-    if (_shared->_durableTimeseriesBucketsMayHaveMixedSchemaData.value_or(false)) {
+    if (_metadata->_durableTimeseriesBucketsMayHaveMixedSchemaData.value_or(false)) {
         return timeseries::MixedSchemaBucketsState::DurableMayHaveMixedSchemaBuckets;
     }
 
@@ -876,7 +874,7 @@ timeseries::MixedSchemaBucketsState CollectionImpl::getTimeseriesMixedSchemaBuck
         return timeseries::MixedSchemaBucketsState::NonDurableMayHaveMixedSchemaBuckets;
     }
 
-    invariant(!_shared->_durableTimeseriesBucketsMayHaveMixedSchemaData.value_or(true) ||
+    invariant(!_metadata->_durableTimeseriesBucketsMayHaveMixedSchemaData.value_or(true) ||
               !_metadata->timeseriesBucketsMayHaveMixedSchemaData.value_or(true));
     return timeseries::MixedSchemaBucketsState::NoMixedSchemaBuckets;
 }
@@ -898,7 +896,7 @@ boost::optional<bool> CollectionImpl::timeseriesBucketingParametersHaveChanged()
         return true;
     }
 
-    return _shared->_durableTimeseriesBucketingParametersHaveChanged;
+    return _metadata->_durableTimeseriesBucketingParametersHaveChanged;
 }
 
 void CollectionImpl::setTimeseriesBucketingParametersChanged(OperationContext* opCtx,
@@ -908,7 +906,7 @@ void CollectionImpl::setTimeseriesBucketingParametersChanged(OperationContext* o
     // TODO SERVER-92265 properly set this catalog option
     _writeMetadata(opCtx, [&](BSONCollectionCatalogEntry::MetaData& md) {
         // Reuse storageEngine options to work around the issue described in SERVER-91193
-        _shared->_durableTimeseriesBucketingParametersHaveChanged = value;
+        md._durableTimeseriesBucketingParametersHaveChanged = value;
         md.options.storageEngine = setFlagToStorageEngineBson(
             md.options.storageEngine,
             backwards_compatible_collection_options::kTimeseriesBucketingParametersHaveChanged,
@@ -937,13 +935,13 @@ void CollectionImpl::setTimeseriesBucketsMayHaveMixedSchemaData(OperationContext
     _writeMetadata(opCtx, [&](BSONCollectionCatalogEntry::MetaData& md) {
         // Reuse storageEngine options to work around the issue described in SERVER-91194
         if (setting.has_value()) {
-            _shared->_durableTimeseriesBucketsMayHaveMixedSchemaData =
+            md._durableTimeseriesBucketsMayHaveMixedSchemaData =
                 MONGO_unlikely(simulateLegacyTimeseriesMixedSchemaFlag.shouldFail()) ? boost::none
                                                                                      : setting;
             md.options.storageEngine = setFlagToStorageEngineBson(
                 md.options.storageEngine,
                 backwards_compatible_collection_options::kTimeseriesBucketsMayHaveMixedSchemaData,
-                _shared->_durableTimeseriesBucketsMayHaveMixedSchemaData);
+                md._durableTimeseriesBucketsMayHaveMixedSchemaData);
         }
 
         // Also update legacy parameter for compatibility when downgrading to older sub-versions
@@ -1034,6 +1032,9 @@ Status CollectionImpl::updateCappedSize(OperationContext* opCtx,
         Status status = _shared->_recordStore->oplog()->updateSize(*newCappedSize);
         if (!status.isOK()) {
             return status;
+        }
+        if (auto truncateMarkers = LocalOplogInfo::get(opCtx)->getTruncateMarkers()) {
+            truncateMarkers->adjust(*newCappedSize);
         }
     }
 
@@ -1295,6 +1296,11 @@ Status CollectionImpl::truncate(OperationContext* opCtx) {
     auto status = _shared->_recordStore->truncate(opCtx);
     if (!status.isOK())
         return status;
+    if (ns().isOplog()) {
+        if (auto truncateMarkers = LocalOplogInfo::get(opCtx)->getTruncateMarkers()) {
+            truncateMarkers->clearMarkersOnCommit(opCtx);
+        }
+    }
 
     // 4) re-create indexes
     for (size_t i = 0; i < indexSpecs.size(); i++) {
@@ -1696,7 +1702,12 @@ Status CollectionImpl::prepareForIndexBuild(OperationContext* opCtx,
         });
 
     return durableCatalog->createIndex(
-        opCtx, getCatalogId(), ns(), getCollectionOptions(), spec->toIndexConfig());
+        opCtx,
+        getCatalogId(),
+        ns(),
+        uuid(),
+        spec->toIndexConfig(),
+        getCollectionOptions().indexOptionDefaults.getStorageEngine());
 }
 
 boost::optional<UUID> CollectionImpl::getIndexBuildUUID(StringData indexName) const {

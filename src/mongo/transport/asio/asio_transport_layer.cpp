@@ -65,6 +65,7 @@
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/options_parser/startup_options.h"
+#include "mongo/util/processinfo.h"
 #include "mongo/util/signal_handlers_synchronous.h"
 #include "mongo/util/strong_weak_finish_line.h"
 
@@ -97,6 +98,25 @@ using TcpInfoOption = SocketOption<IPPROTO_TCP, TCP_INFO, tcp_info>;
 #endif  // __linux__
 
 const Seconds kSessionShutdownTimeout{10};
+
+bool shouldDiscardSocketDueToLostConnectivity(AsioSession::GenericSocket& peerSocket) {
+#ifdef __linux__
+    if (gPessimisticConnectivityCheckForAcceptedConnections.load()) {
+        auto swEvents = pollASIOSocket(peerSocket, POLLRDHUP | POLLHUP, Milliseconds::zero());
+        if (MONGO_unlikely(!swEvents.isOK())) {
+            const auto err = swEvents.getStatus();
+            if (err.code() != ErrorCodes::NetworkTimeout) {
+                LOGV2_DEBUG(10158100, 3, "Error checking socket connectivity", "error"_attr = err);
+                return true;
+            }
+        } else if (MONGO_unlikely(swEvents.getValue() & (POLLRDHUP | POLLHUP))) {
+            LOGV2_DEBUG(10158101, 3, "Client has closed the socket before server reading from it");
+            return true;
+        }
+    }
+#endif  // __linux__
+    return false;
+}
 }  // namespace
 
 MONGO_FAIL_POINT_DEFINE(asioTransportLayerAsyncConnectTimesOut);
@@ -185,9 +205,14 @@ public:
     AsioReactor() : _clkSource(this), _stats(&_clkSource), _ioContext() {}
 
     void run() override {
-        ThreadIdGuard threadIdGuard(this);
-        asio::io_context::work work(_ioContext);
-        _ioContext.run();
+        try {
+            ThreadIdGuard threadIdGuard(this);
+            asio::io_context::work work(_ioContext);
+            _ioContext.run();
+        } catch (...) {
+            auto status = exceptionToStatus();
+            LOGV2_FATAL(10470501, "Unable to start an ASIO reactor", "error"_attr = status);
+        }
     }
 
     void stop() override {
@@ -362,23 +387,23 @@ public:
 
     WrappedEndpoint() = default;
 
-    Endpoint* operator->() noexcept {
+    Endpoint* operator->() {
         return &_endpoint;
     }
 
-    const Endpoint* operator->() const noexcept {
+    const Endpoint* operator->() const {
         return &_endpoint;
     }
 
-    Endpoint& operator*() noexcept {
+    Endpoint& operator*() {
         return _endpoint;
     }
 
-    const Endpoint& operator*() const noexcept {
+    const Endpoint& operator*() const {
         return _endpoint;
     }
 
-    bool operator<(const WrappedEndpoint& rhs) const noexcept {
+    bool operator<(const WrappedEndpoint& rhs) const {
         return _endpoint < rhs._endpoint;
     }
 
@@ -1128,6 +1153,7 @@ void AsioTransportLayer::appendStatsForFTDC(BSONObjBuilder& bob) const {
             record->address.toString(), record->backlogQueueDepth.load());
     }
     queueDepthsArrayBuilder.done();
+    bob.append("connsDiscardedDueToClientDisconnect", _discardedDueToClientDisconnect.get());
 }
 
 void AsioTransportLayer::_runListener() {
@@ -1147,9 +1173,12 @@ void AsioTransportLayer::_runListener() {
         return;
     }
 
+    const int listenBacklog = serverGlobalParams.listenBacklog
+        ? *serverGlobalParams.listenBacklog
+        : ProcessInfo::getDefaultListenBacklog();
     for (auto& acceptorRecord : _acceptorRecords) {
         asio::error_code ec;
-        (void)acceptorRecord->acceptor.listen(serverGlobalParams.listenBacklog, ec);
+        (void)acceptorRecord->acceptor.listen(listenBacklog, ec);
         if (ec) {
             LOGV2_FATAL(31339,
                         "Error listening for new connections on listen address",
@@ -1316,6 +1345,12 @@ void AsioTransportLayer::_acceptConnection(GenericAcceptor& acceptor) {
                   "Error accepting new connection on local endpoint",
                   "localEndpoint"_attr = endpointToHostAndPort(acceptor.local_endpoint()),
                   "error"_attr = ec.message());
+            _acceptConnection(acceptor);
+            return;
+        }
+
+        if (MONGO_unlikely(shouldDiscardSocketDueToLostConnectivity(peerSocket))) {
+            _discardedDueToClientDisconnect.incrementRelaxed();
             _acceptConnection(acceptor);
             return;
         }

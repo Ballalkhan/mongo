@@ -59,11 +59,36 @@ public:
         bool requiresTimeseriesExtendedRangeSupport = false;
     };
 
-    AggregationContextFixture()
-        : AggregationContextFixture(NamespaceString::createNamespaceString_forTest(
-              boost::none, "test", "pipeline_test")) {}
+    AggregationContextFixture(std::unique_ptr<ScopedGlobalServiceContextForTest>
+                                  scopedGlobalServiceContextForTest = nullptr)
+        : AggregationContextFixture(
+              NamespaceString::createNamespaceString_forTest(boost::none, "test", "pipeline_test"),
+              std::move(scopedGlobalServiceContextForTest)) {
+        // TODO SERVER-82020: Delete this once the feature flag defaults to true.
+        // $minMaxScaler is gated behind a feature flag and does
+        // not get put into the map as the flag is off by default. Changing the value of the feature
+        // flag with RAIIServerParameterControllerForTest() does not solve the issue because the
+        // registration logic is not re-hit.
+        try {
+            window_function::Expression::registerParser(
+                "$minMaxScaler",
+                window_function::ExpressionMinMaxScaler::parse,
+                nullptr,
+                AllowedWithApiStrict::kNeverInVersion1);
+        } catch (const DBException& e) {
+            // Allow this exception, to allow multiple instances
+            // to be created in this process.
+            ASSERT_EQ(e.reason(), "Duplicate parsers ($minMaxScaler) registered.");
+        }
+    }
 
-    explicit AggregationContextFixture(NamespaceString nss) {
+    explicit AggregationContextFixture(NamespaceString nss,
+                                       std::unique_ptr<ScopedGlobalServiceContextForTest>
+                                           scopedGlobalServiceContextForTest = nullptr)
+        : ServiceContextTest(
+              scopedGlobalServiceContextForTest
+                  ? std::move(scopedGlobalServiceContextForTest)
+                  : std::make_unique<ScopedGlobalServiceContextForTest>(shouldSetupTL)) {
         _opCtx = makeOperationContext();
         _expCtx = make_intrusive<ExpressionContextForTest>(_opCtx.get(), nss);
         _expCtx->setTempDir(_tempDir.path());
@@ -191,8 +216,8 @@ public:
         size_t mergePipelineSize,
         const BSONObj& shardCursorSortSpec) {
         // Verify that we've split the pipeline at the SplitPipeline stage, not on the deferred.
-        ASSERT_EQ(splitPipeline.shardsPipeline->getSources().size(), shardsPipelineSize);
-        ASSERT_EQ(splitPipeline.mergePipeline->getSources().size(), mergePipelineSize);
+        ASSERT_EQ(splitPipeline.shardsPipeline->size(), shardsPipelineSize);
+        ASSERT_EQ(splitPipeline.mergePipeline->size(), mergePipelineSize);
 
         // Verify the sort is correct.
         ASSERT(splitPipeline.shardCursorsSortSpec);

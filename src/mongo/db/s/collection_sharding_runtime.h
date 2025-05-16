@@ -159,9 +159,17 @@ public:
         OrphanCleanupPolicy orphanCleanupPolicy,
         const ShardVersion& receivedShardVersion) const override;
 
-    boost::optional<CollectionIndexes> getCollectionIndexes(OperationContext* opCtx) const override;
+    // TODO (SERVER-104972): Remove this function.
+    boost::optional<CollectionIndexes> getCollectionIndexes(
+        OperationContext* opCtx) const override {
+        return boost::none;
+    }
 
-    boost::optional<ShardingIndexesCatalogCache> getIndexes(OperationContext* opCtx) const override;
+    // TODO (SERVER-104972): Remove this function.
+    boost::optional<ShardingIndexesCatalogCache> getIndexes(
+        OperationContext* opCtx) const override {
+        return boost::none;
+    }
 
     void checkShardVersionOrThrow(OperationContext* opCtx) const override;
 
@@ -169,8 +177,6 @@ public:
                                   const ShardVersion& receivedShardVersion) const override;
 
     void appendShardVersion(BSONObjBuilder* builder) const override;
-
-    boost::optional<ShardingIndexesCatalogCache> getIndexesInCritSec(OperationContext* opCtx) const;
 
     /**
      * Returns boost::none if the description for the collection is not known yet. Otherwise
@@ -241,7 +247,7 @@ public:
      * be waited on. Otherwise, returns nullptr.
      */
     boost::optional<SharedSemiFuture<void>> getCriticalSectionSignal(
-        OperationContext* opCtx, ShardingMigrationCriticalSection::Operation op) const;
+        ShardingMigrationCriticalSection::Operation op) const;
 
     /**
      * Waits for all ranges deletion tasks with UUID 'collectionUuid' overlapping range
@@ -274,39 +280,12 @@ public:
      * If there an ongoing placement version recover/refresh, it returns the shared semifuture to be
      * waited on. Otherwise, returns boost::none.
      */
-    boost::optional<SharedSemiFuture<void>> getPlacementVersionRecoverRefreshFuture(
-        OperationContext* opCtx) const;
+    boost::optional<SharedSemiFuture<void>> getMetadataRefreshFuture() const;
 
     /**
      * Resets the placement version recover/refresh shared semifuture to boost::none.
      */
     void resetPlacementVersionRecoverRefreshFuture();
-
-    /**
-     * Add a new index to the shard-role index info under a lock.
-     */
-    void addIndex(OperationContext* opCtx,
-                  const IndexCatalogType& index,
-                  const CollectionIndexes& collectionIndexes);
-
-    /**
-     * Removes an index from the shard-role index info under a lock.
-     */
-    void removeIndex(OperationContext* opCtx,
-                     const std::string& name,
-                     const CollectionIndexes& collectionIndexes);
-
-    /**
-     * Clears the shard-role index info and set the collectionIndexes to boost::none.
-     */
-    void clearIndexes(OperationContext* opCtx);
-
-    /**
-     * Clears all the indexes and set the new indexes and index version.
-     */
-    void replaceIndexes(OperationContext* opCtx,
-                        const std::vector<IndexCatalogType>& indexes,
-                        const CollectionIndexes& collectionIndexes);
 
     /**
      * It provides a mechanism to invalidate RangePreservers that can no longer be fulfilled because
@@ -363,11 +342,6 @@ private:
      */
     void _cleanupBeforeInstallingNewCollectionMetadata(WithLock, OperationContext* opCtx);
 
-    /**
-     * This function throws an StaleConfigInfo exception if the critical section is held.
-     */
-    void _checkCritSecForIndexMetadata(OperationContext* opCtx) const;
-
     // The service context under which this instance runs
     ServiceContext* const _serviceContext;
 
@@ -415,10 +389,6 @@ private:
     // Tracks ongoing placement version recover/refresh. Eventually set to the semifuture to wait on
     // and a CancellationSource to cancel it
     boost::optional<PlacementVersionRecoverOrRefresh> _placementVersionInRecoverOrRefresh;
-
-    // Contains the global indexes for the collection. This will be boost::none if no global indexes
-    // have ever been created for the collection.
-    boost::optional<ShardingIndexesCatalogCache> _shardingIndexesCatalogInfo;
 };
 
 /**

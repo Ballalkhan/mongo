@@ -131,6 +131,7 @@ mongo_cc_library(
         "//src/mongo/db/concurrency:lock_manager",
         "//src/mongo/db/pipeline/process_interface:mongo_process_interface",
         "//src/mongo/db/query:query_planner",
+        "//src/mongo/db/query/query_settings:query_settings_service_dependencies",
         "//src/mongo/db/query/query_stats",
         "//src/mongo/db/repl:read_concern_args",
         "//src/mongo/db/session:logical_session_id_helpers",
@@ -230,6 +231,7 @@ mongo_cc_library(
         "//src/mongo/db:read_write_concern_defaults",
         "//src/mongo/db:server_base",
         "//src/mongo/db/concurrency:lock_manager",  # TODO(SERVER-93876): Remove.
+        "//src/mongo/db/exec:scoped_timer",
         "//src/mongo/db/repl:replica_set_messages",  # TODO(SERVER-93876): Remove.
         "//src/mongo/db/update:update_common",  # TODO(SERVER-93876): Remove.
         "//src/mongo/executor:task_executor_pool",
@@ -397,7 +399,6 @@ mongo_cc_library(
         "//src/mongo/s/catalog:type_collection_gen",
         "//src/mongo/s/catalog:type_config_version_gen",
         "//src/mongo/s/catalog:type_database_gen",
-        "//src/mongo/s/catalog:type_index_catalog.cpp",
         "//src/mongo/s/catalog:type_index_catalog_gen",
         "//src/mongo/s/catalog:type_mongos.cpp",
         "//src/mongo/s/catalog:type_namespace_placement_gen",
@@ -520,7 +521,6 @@ mongo_cc_library(
         "//src/mongo/s/catalog:type_chunk.h",
         "//src/mongo/s/catalog:type_chunk_range.h",
         "//src/mongo/s/catalog:type_collection.h",
-        "//src/mongo/s/catalog:type_index_catalog.h",
         "//src/mongo/s/catalog:type_mongos.h",
         "//src/mongo/s/catalog:type_shard.h",
         "//src/mongo/s/catalog:type_tags.h",

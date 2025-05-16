@@ -44,6 +44,7 @@
 #include "mongo/db/admission/execution_admission_context.h"
 #include "mongo/db/catalog/clustered_collection_util.h"
 #include "mongo/db/catalog/collection_options.h"
+#include "mongo/db/catalog/collection_record_store_options.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
 #include "mongo/db/index/multikey_paths.h"
@@ -55,6 +56,7 @@
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/recovery_unit_noop.h"
+#include "mongo/db/storage/spill_table.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/storage_repair_observer.h"
 #include "mongo/db/storage/write_unit_of_work.h"
@@ -104,8 +106,10 @@ std::string generateNewResumableIndexBuildIdent() {
 
 StorageEngineImpl::StorageEngineImpl(OperationContext* opCtx,
                                      std::unique_ptr<KVEngine> engine,
+                                     std::unique_ptr<KVEngine> spillKVEngine,
                                      StorageEngineOptions options)
     : _engine(std::move(engine)),
+      _spillKVEngine(std::move(spillKVEngine)),
       _options(std::move(options)),
       _dropPendingIdentReaper(_engine.get()),
       _minOfCheckpointAndOldestTimestampListener(
@@ -171,10 +175,14 @@ void StorageEngineImpl::loadDurableCatalog(OperationContext* opCtx,
         }
     }
 
+    // The '_mdb_' catalog is generated and retrieved with a default 'RecordStore' configuration.
+    // This maintains current and earlier behavior of a MongoD.
+    const auto catalogRecordStoreOpts = RecordStore::Options{};
     if (!catalogExists) {
         WriteUnitOfWork uow(opCtx);
 
-        auto status = _engine->createRecordStore(kCatalogInfoNamespace, kCatalogInfo);
+        auto status =
+            _engine->createRecordStore(kCatalogInfoNamespace, kCatalogInfo, catalogRecordStoreOpts);
 
         // BadValue is usually caused by invalid configuration string.
         // We still fassert() but without a stack trace.
@@ -185,8 +193,9 @@ void StorageEngineImpl::loadDurableCatalog(OperationContext* opCtx,
         uow.commit();
     }
 
-    _catalogRecordStore =
-        _engine->getRecordStore(opCtx, kCatalogInfoNamespace, kCatalogInfo, CollectionOptions());
+    _catalogRecordStore = _engine->getRecordStore(
+        opCtx, kCatalogInfoNamespace, kCatalogInfo, catalogRecordStoreOpts, boost::none /* uuid */);
+
     if (shouldLog(::mongo::logv2::LogComponent::kStorageRecovery, kCatalogLogLevel)) {
         LOGV2_FOR_RECOVERY(4615631, kCatalogLogLevel.toInt(), "loadDurableCatalog:");
         _dumpCatalog(opCtx);
@@ -420,13 +429,9 @@ Status StorageEngineImpl::_recoverOrphanedCollection(OperationContext* opCtx,
     WriteUnitOfWork wuow(opCtx);
     const auto catalogEntry = _catalog->getParsedCatalogEntry(opCtx, catalogId);
     const auto md = catalogEntry->metadata;
-    const auto options = md->options;
-    const auto keyFormat = options.clusteredIndex ? KeyFormat::String : KeyFormat::Long;
-    Status status = _engine->recoverOrphanedIdent(collectionName,
-                                                  collectionIdent,
-                                                  keyFormat,
-                                                  options.timeseries.has_value(),
-                                                  options.storageEngine);
+    const auto recordStoreOptions = getRecordStoreOptions(collectionName, md->options);
+    Status status =
+        _engine->recoverOrphanedIdent(collectionName, collectionIdent, recordStoreOptions);
 
     bool dataModified = status.code() == ErrorCodes::DataModifiedByRepair;
     if (!status.isOK() && !dataModified) {
@@ -488,7 +493,8 @@ bool StorageEngineImpl::_handleInternalIdent(OperationContext* opCtx,
     // When starting up after a clean shutdown and resumable index builds are supported, find the
     // internal idents that contain the relevant information to resume each index build and recover
     // the state.
-    auto rs = _engine->getRecordStore(opCtx, NamespaceString::kEmpty, ident, CollectionOptions());
+    auto rs = _engine->getRecordStore(
+        opCtx, NamespaceString::kEmpty, ident, RecordStore::Options{}, boost::none /* uuid */);
 
     auto cursor = rs->getCursor(opCtx);
     auto record = cursor->next();
@@ -814,6 +820,9 @@ void StorageEngineImpl::cleanShutdown(ServiceContext* svcCtx) {
 
     _engine->cleanShutdown();
     // intentionally not deleting _engine
+    if (_spillKVEngine) {
+        _spillKVEngine->cleanShutdown();
+    }
 }
 
 StorageEngineImpl::~StorageEngineImpl() {}
@@ -943,6 +952,15 @@ Status StorageEngineImpl::repairRecordStore(OperationContext* opCtx,
     return status;
 }
 
+std::unique_ptr<SpillTable> StorageEngineImpl::makeSpillTable(OperationContext* opCtx,
+                                                              KeyFormat keyFormat) {
+    invariant(_spillKVEngine);
+    std::unique_ptr<RecordStore> rs = _spillKVEngine->makeTemporaryRecordStore(
+        opCtx, ident::generateNewInternalIdent(), keyFormat);
+    LOGV2_DEBUG(10380301, 1, "Created spill table", "ident"_attr = rs->getIdent());
+    return std::make_unique<SpillTable>(std::move(rs));
+}
+
 std::unique_ptr<TemporaryRecordStore> StorageEngineImpl::makeTemporaryRecordStore(
     OperationContext* opCtx, KeyFormat keyFormat) {
     std::unique_ptr<RecordStore> rs =
@@ -1044,10 +1062,6 @@ boost::optional<Timestamp> StorageEngineImpl::getLastStableRecoveryTimestamp() c
 
 bool StorageEngineImpl::supportsReadConcernSnapshot() const {
     return _engine->supportsReadConcernSnapshot();
-}
-
-bool StorageEngineImpl::supportsOplogTruncateMarkers() const {
-    return _engine->supportsOplogTruncateMarkers();
 }
 
 void StorageEngineImpl::clearDropPendingState(OperationContext* opCtx) {
@@ -1354,6 +1368,10 @@ bool StorageEngineImpl::underCachePressure() {
 
 size_t StorageEngineImpl::getCacheSizeMB() {
     return _engine->getCacheSizeMB();
+}
+
+bool StorageEngineImpl::hasOngoingLiveRestore() {
+    return _engine->hasOngoingLiveRestore();
 }
 
 }  // namespace mongo

@@ -170,6 +170,10 @@ std::size_t CursorManager::timeoutCursors(OperationContext* opCtx, Date_t now) {
               "Cursor timed out",
               "cursorId"_attr = cursor->cursorid(),
               "idleSince"_attr = cursor->getLastUseDate());
+        // The memory tracker needs to be moved from the cursor to the opCtx in order for memory
+        // metrics to be reset on a valid tracker.
+        OperationMemoryUsageTracker::moveToOpCtxIfAvailable(cursor.get(), opCtx);
+
         cursor->dispose(opCtx, boost::none);
     }
     return toDisposeWithoutMutex.size();
@@ -259,7 +263,6 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(
 
     LOGV2_DEBUG(8928404, 2, "Pinning cursor", "cursorId"_attr = cursor->cursorid());
     auto pin = ClientCursorPin(opCtx, cursor, this);
-    pin.unstashResourcesOntoOperationContext();
     return StatusWith(std::move(pin));
 }
 
@@ -345,7 +348,8 @@ std::vector<GenericCursor> CursorManager::getIdleCursors(
     return cursors;
 }
 
-stdx::unordered_set<CursorId> CursorManager::getCursorsForSession(LogicalSessionId lsid) const {
+stdx::unordered_set<CursorId> CursorManager::getCursorsForSession(
+    const LogicalSessionId& lsid) const {
     stdx::unordered_set<CursorId> cursors;
 
     auto allPartitions = _cursorMap->lockAllPartitions();
@@ -362,11 +366,11 @@ stdx::unordered_set<CursorId> CursorManager::getCursorsForSession(LogicalSession
 }
 
 stdx::unordered_set<CursorId> CursorManager::getCursorsForOpKeys(
-    std::vector<OperationKey> opKeys) const {
+    const std::vector<OperationKey>& opKeys) const {
     stdx::unordered_set<CursorId> cursors;
 
     stdx::lock_guard<stdx::mutex> lk(_opKeyMutex);
-    for (auto opKey : opKeys) {
+    for (auto&& opKey : opKeys) {
         if (auto it = _opKeyMap.find(opKey); it != _opKeyMap.end()) {
             for (auto cursor : it->second) {
                 cursors.insert(cursor);

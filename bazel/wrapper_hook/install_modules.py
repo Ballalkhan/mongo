@@ -119,9 +119,26 @@ def install_modules(bazel):
         deps_needed = deps
 
     if need_to_install:
-        subprocess.run(
-            [bazel, "build", "--config=local"] + ["@poetry//:library_" + dep for dep in deps_needed]
+        cmd = [
+            bazel,
+            "build",
+        ] + ["@poetry//:library_" + dep for dep in deps_needed]
+        proc = subprocess.run(
+            cmd
+            + [
+                "--remote_download_all",
+                "--bes_backend=",
+                "--bes_results_url=",
+            ]
         )
+        if proc.returncode != 0:
+            print("Failed to install modules using remote exec/cache, falling back to local...")
+            proc = subprocess.run(
+                cmd
+                + [
+                    "--config=local",
+                ]
+            )
         deps_missing = search_for_modules(deps_needed, deps_installed)
         if deps_missing:
             raise Exception(f"Failed to install python deps {deps_missing}")

@@ -135,7 +135,6 @@ feature_flags:
         cpp_varname: gFeatureFlagQETextSearchPreview
         default: false
         shouldBeFCVGated: true
-        fcv_context_unaware: true
     featureFlagExposeClientIpInAuditLogs:
         description: "Expose client IP in audit logs for load-balanced connections"
         cpp_varname: gFeatureFlagExposeClientIpInAuditLogs
@@ -165,5 +164,15 @@ feature_flags:
     featureFlagIntentRegistration:
         description: "Enables intent registration in place of RSTL acquisitions"
         cpp_varname: gFeatureFlagIntentRegistration
+        default: false
+        shouldBeFCVGated: false
+    featureFlagRecordDelinquentMetrics:
+        description: "Enables delinquent metrics recording"
+        cpp_varname: gFeatureFlagRecordDelinquentMetrics
+        default: false
+        shouldBeFCVGated: false
+    featureFlagRateLimitIngressConnectionEstablishment:
+        description: "Queues connection establishment after exceeding the maximum rate"
+        cpp_varname: gFeatureFlagRateLimitIngressConnectionEstablishment
         default: false
         shouldBeFCVGated: false

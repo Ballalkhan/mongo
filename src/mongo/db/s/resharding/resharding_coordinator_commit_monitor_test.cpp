@@ -232,7 +232,7 @@ void CoordinatorCommitMonitorTest::mockCommandForRecipients(Milliseconds remaini
         }
 
         ShardsvrReshardingOperationTimeResponse response;
-        response.setRemainingMillis(remainingOperationTime);
+        response.setRecipientRemainingMillis(remainingOperationTime);
         return response.toBSON();
     };
 
@@ -260,7 +260,7 @@ void CoordinatorCommitMonitorTest::mockOmitRemainingMillisForOneRecipient() {
             }
             ShardsvrReshardingOperationTimeResponse response;
             auto threshold = Milliseconds(gRemainingReshardingOperationTimeThresholdMillis.load());
-            response.setRemainingMillis(threshold - Milliseconds(1));
+            response.setRecipientRemainingMillis(threshold - Milliseconds(1));
             return response.toBSON();
         });
     }
@@ -280,9 +280,9 @@ void CoordinatorCommitMonitorTest::mockRemaingOperationTimesCommandForRecipients
         ShardsvrReshardingOperationTimeResponse response;
         if (useMin) {
             useMin = false;
-            response.setRemainingMillis(remainingOperationTimes.min);
+            response.setRecipientRemainingMillis(remainingOperationTimes.min);
         } else {
-            response.setRemainingMillis(remainingOperationTimes.max);
+            response.setRecipientRemainingMillis(remainingOperationTimes.max);
         }
         return response.toBSON();
     };
@@ -307,7 +307,7 @@ void CoordinatorCommitMonitorTest::mockRemaingOperationTimesCommandForRecipients
             }
 
             ShardsvrReshardingOperationTimeResponse response;
-            response.setRemainingMillis(remainingOperationTimes[i]);
+            response.setRecipientRemainingMillis(remainingOperationTimes[i]);
             response.setMajorityReplicationLagMillis(replicationLags[i]);
             return response.toBSON();
         });
@@ -496,6 +496,36 @@ TEST_F(CoordinatorCommitMonitorTest,
     };
     mockRemaingOperationTimesCommandForRecipients(remainingOpTimes2, replicationLags2);
 
+    future.get();
+}
+
+TEST_F(CoordinatorCommitMonitorTest, ReconfiguringThreshold) {
+    auto thresholdBefore = gRemainingReshardingOperationTimeThresholdMillis.load();
+
+    auto fp = globalFailPointRegistry().find("hangBeforeQueryingRecipients");
+    auto timesEnteredBefore = fp->setMode(FailPoint::alwaysOn);
+
+    auto future = getCommitMonitor()->waitUntilRecipientsAreWithinCommitThreshold();
+
+    fp->waitForTimesEntered(timesEnteredBefore + 1);
+    auto timesEnteredAfter = fp->setMode(FailPoint::off);
+    ASSERT_EQ(timesEnteredAfter, timesEnteredBefore + 1);
+
+    std::vector<Milliseconds> remainingOpTimes{
+        Milliseconds{0},
+        Milliseconds{thresholdBefore + 1},
+    };
+    std::vector<boost::optional<Milliseconds>> replicationLags{
+        Milliseconds{0},
+        Milliseconds{0},
+    };
+    auto thresholdAfter = thresholdBefore + 2;
+
+    RAIIServerParameterControllerForTest threshold{
+        "remainingReshardingOperationTimeThresholdMillis", thresholdAfter};
+    mockRemaingOperationTimesCommandForRecipients(remainingOpTimes, replicationLags);
+
+    // If the commit monitor doesn't detect the new threshold, the wait below would hang.
     future.get();
 }
 

@@ -244,7 +244,7 @@ public:
         }
 
         {
-            initializeForShard(getServiceContext());
+            initializeForShard(getServiceContext(), nullptr /* setClusterParameterImplFn */);
             assertQuerySettingsLookupWithoutRejectionCheckForShard(cmdBSON, deferredShape, nss);
             assertQuerySettingsLookupWithRejectionCheckForShard(cmdBSON, deferredShape, nss);
         }

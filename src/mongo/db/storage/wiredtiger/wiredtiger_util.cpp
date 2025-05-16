@@ -895,12 +895,6 @@ Status WiredTigerUtil::setTableLogging(WiredTigerSession& session,
 
     {
         WiredTigerConfigParser existingMetadataParser(existingMetadata);
-
-        // Sanity check against a table having multiple logging specifications.
-        invariant(existingMetadataParser.isTableLoggingSettingValid(),
-                  str::stream() << "Table has contradictory logging settings. Uri: " << uri
-                                << " Conf: " << existingMetadata);
-
         auto currentSetting = existingMetadataParser.isTableLoggingEnabled();
         if (currentSetting && *currentSetting == on) {
             // The table is running with the expected logging settings.
@@ -929,15 +923,40 @@ Status WiredTigerUtil::setTableLogging(WiredTigerSession& session,
     return Status::OK();
 }
 
+static int mdb_handle_error_for_statistics(WT_EVENT_HANDLER* handler,
+                                           WT_SESSION* session,
+                                           int errorCode,
+                                           const char* message) {
+    if (errorCode == EINVAL) {
+        // suppressing error "cannot open a non-statistics cursor before connection is opened" error
+        try {
+            // Parse the WT JSON message string.
+            if (BSONObj obj = fromjson(message); obj.getStringField("msg").ends_with(
+                    "cannot open a non-statistics cursor before connection is opened")) {
+                return 0;
+            }
+        } catch (...) {
+            // Fall back to default behaviour.
+        }
+    }
+    // If it is not the error above we delegate to the normal error handling.
+    return mdb_handle_error(handler, session, errorCode, message);
+}
+
 bool WiredTigerUtil::collectConnectionStatistics(WiredTigerKVEngine* engine, BSONObjBuilder& bob) {
     boost::optional<StatsCollectionPermit> permit = engine->tryGetStatsCollectionPermit();
     if (!permit) {
         return false;
     }
 
+    // Silence some errors when trying to get statistics during startup
+    WiredTigerEventHandler eventHandler;
+    auto handler = eventHandler.getWtEventHandler();
+    handler->handle_error = mdb_handle_error_for_statistics;
+
     // Obtain a session that can be used during shut down,
     // potentially before the storage engine itself shuts down.
-    WiredTigerSession session(&engine->getConnection(), *permit);
+    WiredTigerSession session(&engine->getConnection(), handler, *permit);
 
     // Filter out irrelevant statistic fields.
     std::vector<std::string> fieldsToIgnore = {"LSM"};
@@ -963,9 +982,14 @@ bool WiredTigerUtil::historyStoreStatistics(WiredTigerKVEngine* engine, BSONObjB
         return false;
     }
 
+    // Silence some errors when trying to get statistics during startup
+    WiredTigerEventHandler eventHandler;
+    auto handler = eventHandler.getWtEventHandler();
+    handler->handle_error = mdb_handle_error_for_statistics;
+
     // Obtain a session that can be used during shut down, potentially before the storage engine
     // itself shuts down.
-    WiredTigerSession session(&engine->getConnection(), *permit);
+    WiredTigerSession session(&engine->getConnection(), handler, *permit);
 
     const auto historyStorageStatUri = "statistics:file:WiredTigerHS.wt";
 
@@ -1353,55 +1377,6 @@ boost::optional<bool> WiredTigerConfigParser::isTableLoggingEnabled() const {
     }
 
     return enabledValue.val;
-}
-
-bool WiredTigerConfigParser::isTableLoggingSettingValid() {
-    invariant(!_nextCalled);
-    _nextCalled = true;
-
-    // If there are multiple well-formed "log" keys, they have to match
-    // the first one stored here.
-    boost::optional<bool> firstLogEnabled;
-
-    int retCode;
-    WT_CONFIG_ITEM key;
-    WT_CONFIG_ITEM value;
-    while ((retCode = _next(&key, &value)) == 0) {
-        invariant(key.type == WT_CONFIG_ITEM::WT_CONFIG_ITEM_ID,
-                  fmt::format("unexpected key type {} while iterating keys in configuration string",
-                              fmt::underlying(key.type)));
-        if (StringData{key.str, key.len} == kLogKeyName &&
-            value.type == WT_CONFIG_ITEM::WT_CONFIG_ITEM_STRUCT) {
-            WiredTigerConfigParser logSettingParser(value);
-            WT_CONFIG_ITEM enabledValue;
-            // Not taking into consideration multiple "enabled" sub-keys within the "log" struct.
-            if (auto retCode = logSettingParser.get(kLogEnabledKeyName.data(), &enabledValue);
-                retCode == 0) {
-                if (enabledValue.type == WT_CONFIG_ITEM::WT_CONFIG_ITEM_BOOL) {
-                    // Compare with previous log=(enabled=...) setting.
-                    if (firstLogEnabled) {
-                        if (static_cast<bool>(enabledValue.val) != *firstLogEnabled) {
-                            return false;
-                        }
-                    } else {
-                        firstLogEnabled = enabledValue.val;
-                    }
-                }
-            } else {
-                invariant(retCode == WT_NOTFOUND,
-                          fmt::format("expected WT_NOTFOUND from WT_CONFIG_PARSER::get() but got "
-                                      "{} instead. Log key value: {}",
-                                      retCode,
-                                      StringData{value.str, value.len}));
-            }
-        }
-    }
-
-    // We read all the keys without finding a conflict.
-    invariant(retCode == WT_NOTFOUND,
-              fmt::format("expected WT_NOTFOUND from WT_CONFIG_PARSER::next() but got {} instead",
-                          retCode));
-    return true;
 }
 
 int WiredTigerUtil::handleWtEvictionEvent(WT_SESSION* session) {

@@ -64,8 +64,9 @@
 
 namespace mongo {
 
-// Forward declaration
+// Forward declarations
 enum class AuthoritativeMetadataAccessLevelEnum : std::int32_t;
+class NamespacePlacementChanged;
 
 // TODO (SERVER-74481): Define these functions in the nested `sharding_ddl_util` namespace when the
 // IDL compiler will support the use case.
@@ -133,7 +134,8 @@ void removeCollAndChunksMetadataFromConfig(
     const CollectionType& coll,
     const WriteConcernOptions& writeConcern,
     const OperationSessionInfo& osi,
-    const std::shared_ptr<executor::TaskExecutor>& executor = nullptr);
+    const std::shared_ptr<executor::TaskExecutor>& executor = nullptr,
+    bool logCommitOnConfigPlacementHistory = true);
 
 /**
  * Delete the query analyzer document associated to the passed in namespace.
@@ -354,6 +356,16 @@ void sendFetchCollMetadataToShards(OperationContext* opCtx,
  */
 AuthoritativeMetadataAccessLevelEnum getGrantedAuthoritativeMetadataAccessLevel(
     const VersionContext& vCtx, const ServerGlobalParams::FCVSnapshot& snapshot);
+
+boost::optional<ShardId> pickDataBearingShard(OperationContext* opCtx, const UUID& collUuid);
+
+void generatePlacementChangeNotificationOnShard(
+    OperationContext* opCtx,
+    const NamespacePlacementChanged& placementChangeNotification,
+    const ShardId& shard,
+    const OperationSessionInfo& osi,
+    const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
+    const CancellationToken& token);
 
 }  // namespace sharding_ddl_util
 }  // namespace mongo

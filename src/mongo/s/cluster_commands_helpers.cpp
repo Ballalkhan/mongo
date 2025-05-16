@@ -75,6 +75,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/multi_statement_transaction_requests_sender.h"
 #include "mongo/s/query_analysis_sampler_util.h"
+#include "mongo/s/router_role.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/shard_key_pattern_query_util.h"
 #include "mongo/util/assert_util.h"
@@ -82,16 +83,12 @@
 #include "mongo/util/duration.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/str.h"
-#include "mongo/util/string_map.h"
 
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
-using mongo::repl::ReadConcernArgs;
-using mongo::repl::ReadConcernLevel;
-
 namespace mongo {
-
 namespace cluster::unsplittable {
+
 ShardsvrReshardCollection makeMoveCollectionOrUnshardCollectionRequest(
     const DatabaseName& dbName,
     const NamespaceString& nss,
@@ -148,6 +145,7 @@ ShardsvrReshardCollection makeUnshardCollectionRequest(
         performVerification,
         oplogBatchApplierTaskCount);
 }
+
 }  // namespace cluster::unsplittable
 
 void appendWriteConcernErrorDetailToCmdResponse(const ShardId& shardId,
@@ -297,6 +295,7 @@ AsyncRequestsSender::Request buildDatabaseVersionedRequest(
 
     return {shardId, std::move(versionedCmd)};
 }
+
 }  // namespace
 
 std::vector<AsyncRequestsSender::Request> buildVersionedRequests(
@@ -371,7 +370,8 @@ std::vector<AsyncRequestsSender::Response> gatherResponsesImpl(
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
     const std::vector<AsyncRequestsSender::Request>& requests,
-    bool throwOnStaleShardVersionErrors) {
+    bool throwOnStaleShardVersionErrors,
+    RoutingContext* routingCtx = nullptr) {
 
     // Send the requests.
     MultiStatementTransactionRequestsSender ars(
@@ -382,8 +382,13 @@ std::vector<AsyncRequestsSender::Response> gatherResponsesImpl(
         readPref,
         retryPolicy);
 
-    // Get the responses.
+    if (routingCtx && !requests.empty()) {
+        // If we reach here, at least one versioned request was scheduled and sent to the shards by
+        // the ARS.
+        routingCtx->onRequestSentForNss(nss);
+    }
 
+    // Get the responses.
     std::vector<AsyncRequestsSender::Response> responses;  // Stores results by ShardId
 
     while (!ars.done()) {
@@ -443,29 +448,16 @@ std::vector<AsyncRequestsSender::Response> gatherResponses(
     const NamespaceString& nss,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
-    const std::vector<AsyncRequestsSender::Request>& requests) {
+    const std::vector<AsyncRequestsSender::Request>& requests,
+    RoutingContext* routingCtx) {
     return gatherResponsesImpl(opCtx,
                                dbName,
                                nss,
                                readPref,
                                retryPolicy,
                                requests,
-                               true /* throwOnStaleShardVersionErrors */);
-}
-
-std::vector<AsyncRequestsSender::Response> gatherResponsesNoThrowOnStaleShardVersionErrors(
-    OperationContext* opCtx,
-    const NamespaceString& nss,
-    const ReadPreferenceSetting& readPref,
-    Shard::RetryPolicy retryPolicy,
-    const std::vector<AsyncRequestsSender::Request>& requests) {
-    return gatherResponsesImpl(opCtx,
-                               nss.dbName(),
-                               nss,
-                               readPref,
-                               retryPolicy,
-                               requests,
-                               false /* throwOnStaleShardVersionErrors */);
+                               true /* throwOnStaleShardVersionErrors */,
+                               routingCtx);
 }
 
 BSONObj appendDbVersionIfPresent(BSONObj cmdObj, const CachedDatabaseInfo& dbInfo) {
@@ -607,7 +599,7 @@ std::vector<AsyncRequestsSender::Response> scatterGatherUnversionedTargetConfigS
 std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRoutingTable(
     OperationContext* opCtx,
     const NamespaceString& nss,
-    const CollectionRoutingInfo& cri,
+    RoutingContext& routingCtx,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
@@ -616,38 +608,58 @@ std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRouting
     const boost::optional<BSONObj>& letParameters,
     const boost::optional<LegacyRuntimeConstants>& runtimeConstants,
     bool eligibleForSampling) {
-    auto expCtx = makeExpressionContextWithDefaultsForTargeter(opCtx,
-                                                               nss,
-                                                               cri,
-                                                               collation,
-                                                               boost::none /*explainVerbosity*/,
-                                                               letParameters,
-                                                               runtimeConstants);
-    return scatterGatherVersionedTargetByRoutingTable(
-        expCtx, nss, cri, cmdObj, readPref, retryPolicy, query, collation, eligibleForSampling);
+    auto expCtx =
+        makeExpressionContextWithDefaultsForTargeter(opCtx,
+                                                     nss,
+                                                     routingCtx.getCollectionRoutingInfo(nss),
+                                                     collation,
+                                                     boost::none /*explainVerbosity*/,
+                                                     letParameters,
+                                                     runtimeConstants);
+    return scatterGatherVersionedTargetByRoutingTable(expCtx,
+                                                      nss,
+                                                      routingCtx,
+                                                      cmdObj,
+                                                      readPref,
+                                                      retryPolicy,
+                                                      query,
+                                                      collation,
+                                                      eligibleForSampling);
 }
 
 [[nodiscard]] std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRoutingTable(
     boost::intrusive_ptr<ExpressionContext> expCtx,
     const NamespaceString& nss,
-    const CollectionRoutingInfo& cri,
+    RoutingContext& routingCtx,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
     const BSONObj& query,
     const BSONObj& collation,
     bool eligibleForSampling) {
-    const auto requests = buildVersionedRequestsForTargetedShards(
-        expCtx, nss, cri, {} /* shardsToSkip */, cmdObj, query, collation, eligibleForSampling);
-    return gatherResponses(
-        expCtx->getOperationContext(), nss.dbName(), nss, readPref, retryPolicy, requests);
+    const auto requests =
+        buildVersionedRequestsForTargetedShards(expCtx,
+                                                nss,
+                                                routingCtx.getCollectionRoutingInfo(nss),
+                                                {} /* shardsToSkip */,
+                                                cmdObj,
+                                                query,
+                                                collation,
+                                                eligibleForSampling);
+    return gatherResponses(expCtx->getOperationContext(),
+                           nss.dbName(),
+                           nss,
+                           readPref,
+                           retryPolicy,
+                           requests,
+                           &routingCtx);
 }
 
 std::vector<AsyncRequestsSender::Response>
 scatterGatherVersionedTargetByRoutingTableNoThrowOnStaleShardVersionErrors(
     OperationContext* opCtx,
     const NamespaceString& nss,
-    const CollectionRoutingInfo& cri,
+    RoutingContext& routingCtx,
     const std::set<ShardId>& shardsToSkip,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
@@ -656,6 +668,7 @@ scatterGatherVersionedTargetByRoutingTableNoThrowOnStaleShardVersionErrors(
     const BSONObj& collation,
     const boost::optional<BSONObj>& letParameters,
     const boost::optional<LegacyRuntimeConstants>& runtimeConstants) {
+    const auto& cri = routingCtx.getCollectionRoutingInfo(nss);
     auto expCtx = makeExpressionContextWithDefaultsForTargeter(opCtx,
                                                                nss,
                                                                cri,
@@ -666,8 +679,14 @@ scatterGatherVersionedTargetByRoutingTableNoThrowOnStaleShardVersionErrors(
     const auto requests = buildVersionedRequestsForTargetedShards(
         expCtx, nss, cri, shardsToSkip, cmdObj, query, collation);
 
-    return gatherResponsesNoThrowOnStaleShardVersionErrors(
-        opCtx, nss, readPref, retryPolicy, requests);
+    return gatherResponsesImpl(opCtx,
+                               nss.dbName(),
+                               nss,
+                               readPref,
+                               retryPolicy,
+                               requests,
+                               false /* throwOnStaleShardVersionErrors */,
+                               &routingCtx);
 }
 
 AsyncRequestsSender::Response executeCommandAgainstDatabasePrimaryOnlyAttachingDbVersion(
@@ -1024,10 +1043,10 @@ BSONObj forceReadConcernLocal(OperationContext* opCtx, BSONObj& cmd) {
     const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
     auto atClusterTime = readConcernArgs.getArgsAtClusterTime();
     auto afterClusterTime = readConcernArgs.getArgsAfterClusterTime();
-    BSONObjBuilder bob(cmd.removeField(ReadConcernArgs::kReadConcernFieldName));
+    BSONObjBuilder bob(cmd.removeField(repl::ReadConcernArgs::kReadConcernFieldName));
 
     repl::ReadConcernIdl newReadConcern;
-    newReadConcern.setLevel(ReadConcernLevel::kLocalReadConcern);
+    newReadConcern.setLevel(repl::ReadConcernLevel::kLocalReadConcern);
     // We should carry over the atClusterTime/afterClusterTime to keep causal consistency.
     if (atClusterTime) {
         // atClusterTime is only supported in snapshot readConcern, so we use afterClusterTime
@@ -1039,7 +1058,7 @@ BSONObj forceReadConcernLocal(OperationContext* opCtx, BSONObj& cmd) {
 
     {
         BSONObjBuilder newReadConcernBuilder(
-            bob.subobjStart(ReadConcernArgs::kReadConcernFieldName));
+            bob.subobjStart(repl::ReadConcernArgs::kReadConcernFieldName));
         newReadConcern.serialize(&newReadConcernBuilder);
     }
 

@@ -36,6 +36,7 @@
 #include <utility>
 
 #include "mongo/db/pipeline/group_from_first_document_transformation.h"
+#include "mongo/db/query/sort_pattern.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {
@@ -94,7 +95,7 @@ public:
         return _projSpec;
     }
 
-    void setProjectionSpec(const BSONObj& projSpec) {
+    void setProjectionSpec(BSONObj projSpec) {
         _projSpec = std::move(projSpec);
     }
 
