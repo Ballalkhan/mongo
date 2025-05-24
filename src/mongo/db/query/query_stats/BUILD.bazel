@@ -32,7 +32,6 @@ mongo_cc_library(
         "query_stats.cpp",
         "query_stats_entry.cpp",
         "query_stats_failed_to_record_info.cpp",
-        "query_stats_helpers.h",
         "supplemental_metrics_stats.cpp",
         "vector_search_stats_entry.cpp",
     ],
@@ -121,6 +120,7 @@ mongo_cc_benchmark(
     tags = ["query_bm"],
     deps = [
         "//src/mongo/db/query:query_bm_constants",
+        "//src/mongo/db/query:query_fcv_environment_for_test",
         "//src/mongo/db/query:query_test_service_context",
     ],
 )

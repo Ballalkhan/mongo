@@ -474,22 +474,9 @@ StatusWith<std::pair<ParsedCollModRequest, BSONObj>> parseCollModRequest(
             return getNotSupportedOnTimeseriesError(CollMod::kValidatorFieldName);
         }
         parsed.numModifications++;
-        // If the feature compatibility version is not kLatest, and we are validating features as
-        // primary, ban the use of new agg features introduced in kLatest to prevent them from being
-        // persisted in the catalog.
-        boost::optional<multiversion::FeatureCompatibilityVersion> maxFeatureCompatibilityVersion;
-        // (Generic FCV reference): This FCV check should exist across LTS binary versions.
-        multiversion::FeatureCompatibilityVersion fcv;
-        if (serverGlobalParams.validateFeaturesAsPrimary.load() &&
-            serverGlobalParams.featureCompatibility.acquireFCVSnapshot().isLessThan(
-                multiversion::GenericFCV::kLatest, &fcv)) {
-            maxFeatureCompatibilityVersion = fcv;
-        }
         auto validatorObj = *validator;
-        parsed.collValidator = coll->parseValidator(opCtx,
-                                                    validatorObj.getOwned(),
-                                                    MatchExpressionParser::kDefaultSpecialFeatures,
-                                                    maxFeatureCompatibilityVersion);
+        parsed.collValidator = coll->parseValidator(
+            opCtx, validatorObj.getOwned(), MatchExpressionParser::kDefaultSpecialFeatures);
 
         // Increment counters to track the usage of schema validators.
         validatorCounters.incrementCounters(
@@ -954,6 +941,11 @@ Status _collModInternal(OperationContext* opCtx,
 
         const CollectionOptions& oldCollOptions = coll->getCollectionOptions();
 
+        // Writing invalidates the collection pointer until commit. Snapshot the relevant old
+        // collections settings needed before committing.
+        const auto timeseriesBucketingParametersHaveChanged =
+            coll->timeseriesBucketingParametersHaveChanged();
+
         auto collWriter = [&] {
             if (acquisition) {
                 return CollectionWriter{opCtx, acquisition};
@@ -1043,7 +1035,7 @@ Status _collModInternal(OperationContext* opCtx,
         // this flag.
         // (Generic FCV reference): This FCV check should exist across LTS binary versions.
         // TODO SERVER-80003 remove special version handling when LTS becomes 8.0.
-        if (cmrNew.numModifications == 0 && coll->timeseriesBucketingParametersHaveChanged() &&
+        if (cmrNew.numModifications == 0 && timeseriesBucketingParametersHaveChanged &&
             version == multiversion::GenericFCV::kDowngradingFromLatestToLastLTS) {
             writableColl->setTimeseriesBucketingParametersChanged(opCtx, boost::none);
         }

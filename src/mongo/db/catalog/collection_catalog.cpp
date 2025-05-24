@@ -55,10 +55,10 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/catalog/collection_options.h"
+#include "mongo/db/catalog/collection_record_store_options.h"
 #include "mongo/db/catalog/uncommitted_catalog_updates.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/server_status.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/concurrency/lock_manager_defs.h"
 #include "mongo/db/concurrency/resource_catalog.h"
 #include "mongo/db/query/collation/collator_interface.h"
@@ -66,7 +66,9 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/storage/capped_snapshots.h"
 #include "mongo/db/storage/durable_catalog.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/db/storage/mdb_catalog.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
@@ -137,9 +139,9 @@ void initializeCollectionCatalog(OperationContext* opCtx,
         setMinVisibleToOldestFailpointSet = true;
     }
 
-    std::vector<DurableCatalog::EntryIdentifier> catalogEntries =
-        engine->getDurableCatalog()->getAllCatalogEntries(opCtx);
-    for (DurableCatalog::EntryIdentifier entry : catalogEntries) {
+    std::vector<MDBCatalog::EntryIdentifier> catalogEntries =
+        engine->getMDBCatalog()->getAllCatalogEntries(opCtx);
+    for (MDBCatalog::EntryIdentifier entry : catalogEntries) {
         // If there's no recovery timestamp, every collection is available.
         auto collectionMinValidTs = minValidTs;
         if (MONGO_unlikely(stableTs && setMinVisibleToOldestFailpointSet)) {
@@ -185,15 +187,15 @@ void initCollectionObject(OperationContext* opCtx,
                           const NamespaceString& nss,
                           bool forRepair,
                           Timestamp minValidTs) {
-    auto catalog = engine->getDurableCatalog();
-    const auto catalogEntry = catalog->getParsedCatalogEntry(opCtx, catalogId);
+    const auto mdbCatalog = engine->getMDBCatalog();
+    const auto catalogEntry = durable_catalog::getParsedCatalogEntry(opCtx, catalogId, mdbCatalog);
     const auto md = catalogEntry->metadata;
     uassert(ErrorCodes::MustDowngrade,
             str::stream() << "Collection does not have UUID in KVCatalog. Collection: "
                           << nss.toStringForErrorMsg(),
             md->options.uuid);
 
-    auto ident = catalog->getEntry(catalogId).ident;
+    auto ident = mdbCatalog->getEntry(catalogId).ident;
 
     std::unique_ptr<RecordStore> rs;
     if (forRepair) {
@@ -201,7 +203,9 @@ void initCollectionObject(OperationContext* opCtx,
         // repaired. This also ensures that if we try to use it, it will blow up.
         rs = nullptr;
     } else {
-        rs = engine->getEngine()->getRecordStore(opCtx, nss, ident, md->options);
+        const auto uuid = md->options.uuid;
+        const auto recordStoreOptions = getRecordStoreOptions(nss, md->options);
+        rs = engine->getEngine()->getRecordStore(opCtx, nss, ident, recordStoreOptions, uuid);
         invariant(rs);
     }
 
@@ -227,27 +231,28 @@ constexpr auto kNumDurableCatalogScansDueToMissingMapping = "numScansDueToMissin
 class LatestCollectionCatalog {
 public:
     std::shared_ptr<CollectionCatalog> load() const {
-        std::shared_lock lk(_mutex);  // NOLINT
+        std::shared_lock lk(_readMutex);  // NOLINT
         return _catalog;
     }
 
-    bool compareAndSet(const std::shared_ptr<CollectionCatalog>& oldCatalog,
-                       std::shared_ptr<CollectionCatalog>&& newCatalog) {
-        std::lock_guard lk(_mutex);
-        if (oldCatalog != _catalog)
-            return false;
-        _catalog = std::move(newCatalog);
-        return true;
-    }
-
-    void store(std::shared_ptr<CollectionCatalog>&& newCatalog) {
-        std::lock_guard lk(_mutex);
-        _catalog = std::move(newCatalog);
+    void write(auto&& fn) {
+        // The funny scoping here is to destroy the old catalog after releasing the locks, as if no
+        // one else has a reference it can be mildly expensive and we don't want to block other
+        // threads while we do it
+        std::shared_ptr<CollectionCatalog> newCatalog;
+        {
+            std::lock_guard lk(_writeMutex);
+            newCatalog = fn(*_catalog);
+            std::lock_guard lk2(_readMutex);
+            _catalog.swap(newCatalog);
+        }
     }
 
 private:
-    mutable RWMutex _mutex;
-    // TODO SERVER-56428: Replace with std::atomic<std::shared_ptr> when supported in our toolchain
+    // TODO SERVER-56428: Replace _readMutex std::atomic<std::shared_ptr> when supported in our
+    // toolchain. _writeMutex should remain a mutex.
+    mutable RWMutex _readMutex;
+    mutable stdx::mutex _writeMutex;
     std::shared_ptr<CollectionCatalog> _catalog = std::make_shared<CollectionCatalog>();
 };
 const ServiceContext::Decoration<LatestCollectionCatalog> getCatalogStore =
@@ -494,7 +499,7 @@ public:
     }
 
     void commit(OperationContext* opCtx, boost::optional<Timestamp> commitTime) noexcept override {
-        boost::container::small_vector<CollectionCatalog::CatalogWriteFn, kNumStaticActions>
+        boost::container::small_vector<unique_function<void(CollectionCatalog&)>, kNumStaticActions>
             writeJobs;
 
         // Create catalog write jobs for all updates registered in this WriteUnitOfWork
@@ -737,128 +742,16 @@ void CollectionCatalog::stash(OperationContext* opCtx,
 }
 
 void CollectionCatalog::write(ServiceContext* svcCtx, CatalogWriteFn job) {
-    // It is potentially expensive to copy the collection catalog so we batch the operations by only
-    // having one concurrent thread copying the catalog and executing all the write jobs.
-
-    struct JobEntry {
-        JobEntry(CatalogWriteFn write) : job(std::move(write)) {}
-
-        CatalogWriteFn job;
-
-        struct CompletionInfo {
-            // Used to wait for job to complete by worker thread
-            stdx::mutex mutex;
-            stdx::condition_variable cv;
-
-            // Exception storage if we threw during job execution, so we can transfer the exception
-            // back to the calling thread
-            std::exception_ptr exception;
-
-            // The job is completed when the catalog we modified has been committed back to the
-            // storage or if we threw during its execution
-            bool completed = false;
-        };
-
-        // Shared state for completion info as JobEntry's gets deleted when we are finished
-        // executing. No shared state means that this job belongs to the same thread executing them.
-        std::shared_ptr<CompletionInfo> completion;
-    };
-
-    static std::list<JobEntry> queue;
-    static bool workerExists = false;
-    static stdx::mutex mutex;  // Protecting the two globals above
-
-    invariant(job);
-
-    // Current batch of jobs to execute
-    std::list<JobEntry> pending;
-    {
-        stdx::unique_lock lock(mutex);
-        queue.emplace_back(std::move(job));
-
-        // If worker already exists, then wait on our condition variable until the job is completed
-        if (workerExists) {
-            auto completion = std::make_shared<JobEntry::CompletionInfo>();
-            queue.back().completion = completion;
-            lock.unlock();
-
-            stdx::unique_lock completionLock(completion->mutex);
-            const bool& completed = completion->completed;
-            completion->cv.wait(completionLock, [&completed]() { return completed; });
-
-            // Throw any exception that was caught during execution of our job. Make sure we destroy
-            // the exception_ptr on the same thread that throws the exception to avoid a data race
-            // between destroying the exception_ptr and reading the exception.
-            auto ex = std::move(completion->exception);
-            if (ex)
-                std::rethrow_exception(ex);
-            return;
-        }
-
-        // No worker existed, then we take this responsibility
-        workerExists = true;
-        pending.splice(pending.end(), queue);
-    }
-
-    // Implementation for thread with worker responsibility below, only one thread at a time can be
-    // in here. Keep track of completed jobs so we can notify them when we've written back the
-    // catalog to storage
-    std::list<JobEntry> completed;
-    std::exception_ptr myException;
-
     auto& storage = getCatalogStore(svcCtx);
-    // hold onto base so if we need to delete it we can do it outside of the lock
-    auto base = storage.load();
-    // copy the collection catalog, this could be expensive, but we will only have one pending
-    // collection in flight at a given time
-    auto clone = std::make_shared<CollectionCatalog>(*base);
-
-    // Execute jobs until we drain the queue
-    while (true) {
-        for (auto&& current : pending) {
-            // Store any exception thrown during job execution so we can notify the calling thread
-            try {
-                current.job(*clone);
-            } catch (...) {
-                if (current.completion)
-                    current.completion->exception = std::current_exception();
-                else
-                    myException = std::current_exception();
-            }
-        }
-        // Transfer the jobs we just executed to the completed list
-        completed.splice(completed.end(), pending);
-
-        stdx::lock_guard lock(mutex);
-        if (queue.empty()) {
-            // Queue is empty, store catalog and relinquish responsibility of being worker thread
-            storage.store(std::move(clone));
-            workerExists = false;
-            break;
-        }
-
-        // Transfer jobs in queue to the pending list
-        pending.splice(pending.end(), queue);
-    }
-
-    for (auto&& entry : completed) {
-        if (!entry.completion) {
-            continue;
-        }
-
-        stdx::lock_guard completionLock(entry.completion->mutex);
-        entry.completion->completed = true;
-        entry.completion->cv.notify_one();
-    }
-    LOGV2_DEBUG(
-        5255601, 1, "Finished writing to the CollectionCatalog", "jobs"_attr = completed.size());
-    if (myException)
-        std::rethrow_exception(myException);
+    storage.write([&](auto& catalog) {
+        auto clone = std::make_shared<CollectionCatalog>(catalog);
+        job(*clone);
+        return clone;
+    });
 }
 
-void CollectionCatalog::write(OperationContext* opCtx,
-                              std::function<void(CollectionCatalog&)> job) {
-    write(opCtx->getServiceContext(), std::move(job));
+void CollectionCatalog::write(OperationContext* opCtx, CatalogWriteFn job) {
+    write(opCtx->getServiceContext(), job);
 }
 
 Status CollectionCatalog::createView(OperationContext* opCtx,
@@ -1181,7 +1074,8 @@ const Collection* CollectionCatalog::_openCollectionAtLatestByNamespaceOrUUID(
         return latestCollection->getCatalogId();
     }();
 
-    auto catalogEntry = DurableCatalog::get(opCtx)->getParsedCatalogEntry(opCtx, catalogId);
+    auto catalogEntry =
+        durable_catalog::getParsedCatalogEntry(opCtx, catalogId, MDBCatalog::get(opCtx));
 
     const NamespaceString& nss = [&]() {
         if (nssOrUUID.isNamespaceString()) {
@@ -1322,7 +1216,8 @@ const Collection* CollectionCatalog::_openCollectionAtLatestByNamespaceOrUUID(
     // base when available as it might contain an index that is about to be added. Dropped indexes
     // can be found through other means in the drop pending state.
     invariant(latestCollection || pendingCollection);
-    auto durableCatalogEntry = DurableCatalog::get(opCtx)->getParsedCatalogEntry(opCtx, catalogId);
+    auto durableCatalogEntry =
+        durable_catalog::getParsedCatalogEntry(opCtx, catalogId, MDBCatalog::get(opCtx));
     invariant(durableCatalogEntry);
     auto compatibleCollection =
         _createCompatibleCollection(opCtx,
@@ -1407,7 +1302,7 @@ const Collection* CollectionCatalog::_openCollectionAtPointInTimeByNamespaceOrUU
     return nullptr;
 }
 
-boost::optional<DurableCatalogEntry> CollectionCatalog::_fetchPITCatalogEntry(
+boost::optional<durable_catalog::CatalogEntry> CollectionCatalog::_fetchPITCatalogEntry(
     OperationContext* opCtx,
     const NamespaceStringOrUUID& nssOrUUID,
     boost::optional<Timestamp> readTimestamp) const {
@@ -1418,35 +1313,39 @@ boost::optional<DurableCatalogEntry> CollectionCatalog::_fetchPITCatalogEntry(
         return boost::none;
     }
 
-    auto writeCatalogIdAfterScan = [&](const boost::optional<DurableCatalogEntry>& catalogEntry) {
-        if (!catalogEntry) {
-            if (nssOrUUID.isNamespaceString()) {
-                if (!_catalogIdTracker.canRecordNonExisting(nssOrUUID.nss())) {
-                    return;
-                }
-            } else {
-                if (!_catalogIdTracker.canRecordNonExisting(nssOrUUID.uuid())) {
-                    return;
+    auto writeCatalogIdAfterScan =
+        [&](const boost::optional<durable_catalog::CatalogEntry>& catalogEntry) {
+            if (!catalogEntry) {
+                if (nssOrUUID.isNamespaceString()) {
+                    if (!_catalogIdTracker.canRecordNonExisting(nssOrUUID.nss())) {
+                        return;
+                    }
+                } else {
+                    if (!_catalogIdTracker.canRecordNonExisting(nssOrUUID.uuid())) {
+                        return;
+                    }
                 }
             }
-        }
 
-        CollectionCatalog::write(opCtx, [&](CollectionCatalog& catalog) {
-            // Insert catalogId for both the namespace and UUID if the catalog entry is found.
-            if (catalogEntry) {
-                catalog._catalogIdTracker.recordExistingAtTime(
-                    catalogEntry->metadata->nss,
-                    *catalogEntry->metadata->options.uuid,
-                    catalogEntry->catalogId,
-                    *readTimestamp);
-            } else if (nssOrUUID.isNamespaceString()) {
-                catalog._catalogIdTracker.recordNonExistingAtTime(nssOrUUID.nss(), *readTimestamp);
-            } else {
-                catalog._catalogIdTracker.recordNonExistingAtTime(nssOrUUID.uuid(), *readTimestamp);
-            }
-        });
-    };
+            CollectionCatalog::write(opCtx, [&](CollectionCatalog& catalog) {
+                // Insert catalogId for both the namespace and UUID if the catalog entry is found.
+                if (catalogEntry) {
+                    catalog._catalogIdTracker.recordExistingAtTime(
+                        catalogEntry->metadata->nss,
+                        *catalogEntry->metadata->options.uuid,
+                        catalogEntry->catalogId,
+                        *readTimestamp);
+                } else if (nssOrUUID.isNamespaceString()) {
+                    catalog._catalogIdTracker.recordNonExistingAtTime(nssOrUUID.nss(),
+                                                                      *readTimestamp);
+                } else {
+                    catalog._catalogIdTracker.recordNonExistingAtTime(nssOrUUID.uuid(),
+                                                                      *readTimestamp);
+                }
+            });
+        };
 
+    auto mdbCatalog = MDBCatalog::get(opCtx);
     if (result == HistoricalCatalogIdTracker::LookupResult::Existence::kUnknown) {
         // We shouldn't receive kUnknown when we don't have a timestamp since no timestamp means
         // we're operating on the latest.
@@ -1455,21 +1354,21 @@ boost::optional<DurableCatalogEntry> CollectionCatalog::_fetchPITCatalogEntry(
         // Scan durable catalog when we don't have accurate catalogId mapping for this timestamp.
         gCollectionCatalogSection.numScansDueToMissingMapping.fetchAndAddRelaxed(1);
         auto catalogEntry = nssOrUUID.isNamespaceString()
-            ? DurableCatalog::get(opCtx)->scanForCatalogEntryByNss(opCtx, nssOrUUID.nss())
-            : DurableCatalog::get(opCtx)->scanForCatalogEntryByUUID(opCtx, nssOrUUID.uuid());
+            ? durable_catalog::scanForCatalogEntryByNss(opCtx, nssOrUUID.nss(), mdbCatalog)
+            : durable_catalog::scanForCatalogEntryByUUID(opCtx, nssOrUUID.uuid(), mdbCatalog);
         writeCatalogIdAfterScan(catalogEntry);
         return catalogEntry;
     }
 
-    auto catalogEntry = DurableCatalog::get(opCtx)->getParsedCatalogEntry(opCtx, catalogId);
+    auto catalogEntry = durable_catalog::getParsedCatalogEntry(opCtx, catalogId, mdbCatalog);
     if (!catalogEntry ||
         (nssOrUUID.isNamespaceString() && nssOrUUID.nss() != catalogEntry->metadata->nss)) {
         invariant(readTimestamp);
         // If no entry is found or the entry contains a different namespace, the mapping might be
         // incorrect since it is incomplete after startup; scans durable catalog to confirm.
         auto catalogEntry = nssOrUUID.isNamespaceString()
-            ? DurableCatalog::get(opCtx)->scanForCatalogEntryByNss(opCtx, nssOrUUID.nss())
-            : DurableCatalog::get(opCtx)->scanForCatalogEntryByUUID(opCtx, nssOrUUID.uuid());
+            ? durable_catalog::scanForCatalogEntryByNss(opCtx, nssOrUUID.nss(), mdbCatalog)
+            : durable_catalog::scanForCatalogEntryByUUID(opCtx, nssOrUUID.uuid(), mdbCatalog);
         writeCatalogIdAfterScan(catalogEntry);
         return catalogEntry;
     }
@@ -1480,7 +1379,7 @@ std::shared_ptr<Collection> CollectionCatalog::_createCompatibleCollection(
     OperationContext* opCtx,
     const std::shared_ptr<const Collection>& latestCollection,
     boost::optional<Timestamp> readTimestamp,
-    const DurableCatalogEntry& catalogEntry) const {
+    const durable_catalog::CatalogEntry& catalogEntry) const {
     // Check if the collection is drop pending, not expired, and compatible with the read timestamp.
     std::shared_ptr<Collection> dropPendingColl = [&]() -> std::shared_ptr<Collection> {
         const std::weak_ptr<Collection>* dropPending =
@@ -1544,7 +1443,7 @@ std::shared_ptr<Collection> CollectionCatalog::_createCompatibleCollection(
 std::shared_ptr<Collection> CollectionCatalog::_createNewPITCollection(
     OperationContext* opCtx,
     boost::optional<Timestamp> readTimestamp,
-    const DurableCatalogEntry& catalogEntry) const {
+    const durable_catalog::CatalogEntry& catalogEntry) const {
     // The ident is expired, but it still may not have been dropped by the reaper. Try to mark it as
     // in use.
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
@@ -1558,28 +1457,30 @@ std::shared_ptr<Collection> CollectionCatalog::_createNewPITCollection(
     }
 
     // Instantiate a new collection without any shared state.
+    const auto nss = catalogEntry.metadata->nss;
     LOGV2_DEBUG(6825401,
                 1,
                 "Instantiating a new collection",
-                logAttrs(catalogEntry.metadata->nss),
+                logAttrs(nss),
                 "ident"_attr = catalogEntry.ident,
                 "md"_attr = catalogEntry.metadata->toBSON(),
                 "timestamp"_attr = readTimestamp);
 
+    const auto collectionOptions = catalogEntry.metadata->options;
     std::unique_ptr<RecordStore> rs =
         opCtx->getServiceContext()->getStorageEngine()->getEngine()->getRecordStore(
-            opCtx, catalogEntry.metadata->nss, catalogEntry.ident, catalogEntry.metadata->options);
+            opCtx,
+            nss,
+            catalogEntry.ident,
+            getRecordStoreOptions(nss, collectionOptions),
+            collectionOptions.uuid);
 
     // Set the ident to the one returned by the ident reaper. This is to prevent the ident from
     // being dropping prematurely.
     rs->setIdent(std::move(newIdent));
 
-    std::shared_ptr<Collection> collToReturn =
-        Collection::Factory::get(opCtx)->make(opCtx,
-                                              catalogEntry.metadata->nss,
-                                              catalogEntry.catalogId,
-                                              catalogEntry.metadata,
-                                              std::move(rs));
+    std::shared_ptr<Collection> collToReturn = Collection::Factory::get(opCtx)->make(
+        opCtx, nss, catalogEntry.catalogId, catalogEntry.metadata, std::move(rs));
     Status status =
         collToReturn->initFromExisting(opCtx, /*collection=*/nullptr, catalogEntry, readTimestamp);
     if (!status.isOK()) {
@@ -1671,9 +1572,13 @@ void CollectionCatalog::onCloseCatalog() {
         return;
     }
 
-    _shadowCatalog.emplace();
+    mongo::stdx::unordered_map<UUID, NamespaceString, UUID::Hash> shadowCatalog;
+    shadowCatalog.reserve(_catalog.size());
     for (auto& entry : _catalog)
-        _shadowCatalog->insert({entry.first, entry.second->ns()});
+        shadowCatalog.insert({entry.first, entry.second->ns()});
+    _shadowCatalog =
+        std::make_shared<const mongo::stdx::unordered_map<UUID, NamespaceString, UUID::Hash>>(
+            std::move(shadowCatalog));
 }
 
 void CollectionCatalog::onOpenCatalog() {

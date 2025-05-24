@@ -37,6 +37,8 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/process_interface/stub_mongo_process_interface.h"
+#include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/service_context_test_fixture.h"
 #include "mongo/db/vector_clock_mutable.h"
 #include "mongo/unittest/unittest.h"
@@ -162,6 +164,19 @@ TEST_F(ExpressionContextTest, DontInitializeUnreferencedVariables) {
     ASSERT_FALSE(expCtx->variables.hasValue(Variables::kUserRolesId));
 }
 
+TEST_F(ExpressionContextTest, ErrorsIfClusterTimeUsedInStandalone) {
+    auto opCtx = makeOperationContext();
+    repl::ReplicationCoordinator::set(opCtx->getServiceContext(),
+                                      std::make_unique<repl::ReplicationCoordinatorMock>(
+                                          opCtx->getServiceContext(), repl::ReplSettings()));
+    std::vector<BSONObj> pipeline;
+    pipeline.push_back(BSON("$project" << BSON("a" << "$$CLUSTER_TIME")));
+    AggregateCommandRequest acr({} /*nss*/, pipeline);
+    auto expCtx = ExpressionContextBuilder{}.fromRequest(opCtx.get(), acr).build();
+    Pipeline::parse(pipeline, expCtx);
+    ASSERT_THROWS_CODE(expCtx->initializeReferencedSystemVariables(), AssertionException, 10071200);
+}
+
 TEST_F(ExpressionContextTest, CanBuildWithoutView) {
     auto opCtx = makeOperationContext();
 
@@ -198,7 +213,7 @@ TEST_F(ExpressionContextTest, CanBuildWithView) {
     ASSERT_BSONOBJ_EQ(expCtxWithView->getView()->second[0], viewPipeline[0]);
 }
 
-TEST_F(ExpressionContextTest, CopyWithDoesNotInitializeView) {
+TEST_F(ExpressionContextTest, CopyWithDoesNotInitializeViewByDefault) {
     auto opCtx = makeOperationContext();
 
     auto viewNss = NamespaceString::createNamespaceString_forTest("test"_sd, "view"_sd);
@@ -223,6 +238,30 @@ TEST_F(ExpressionContextTest, CopyWithDoesNotInitializeView) {
     ASSERT_EQUALS(expCtxOriginal->getView()->first, viewNss);
     ASSERT_EQUALS(expCtxOriginal->getView()->second.size(), viewPipeline.size());
     ASSERT_BSONOBJ_EQ(expCtxOriginal->getView()->second[0], viewPipeline[0]);
+}
+
+TEST_F(ExpressionContextTest, CopyWithInitializesViewWhenSpecified) {
+    auto opCtx = makeOperationContext();
+
+    auto viewNss = NamespaceString::createNamespaceString_forTest("test"_sd, "view"_sd);
+    std::vector<BSONObj> viewPipeline = {BSON("$project" << BSON("_id" << 0))};
+
+    auto view = boost::make_optional(std::make_pair(viewNss, viewPipeline));
+    auto expCtxOriginal =
+        mongo::ExpressionContextBuilder{}
+            .opCtx(opCtx.get())
+            .ns(NamespaceString::createNamespaceString_forTest("test"_sd, "coll1"_sd))
+            .view(view)
+            .build();
+
+    auto namespaceCopy = NamespaceString::createNamespaceString_forTest("test"_sd, "coll2"_sd);
+    auto expCtxCopy = expCtxOriginal->copyWith(namespaceCopy, boost::none, boost::none, view);
+
+    // expCtxCopy has a view.
+    ASSERT_TRUE(expCtxCopy->getView().has_value());
+    ASSERT_EQUALS(expCtxCopy->getView()->first, viewNss);
+    ASSERT_EQUALS(expCtxCopy->getView()->second.size(), viewPipeline.size());
+    ASSERT_BSONOBJ_EQ(expCtxCopy->getView()->second[0], viewPipeline[0]);
 }
 
 }  // namespace

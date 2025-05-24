@@ -42,12 +42,26 @@
 #include "mongo/db/query/search/manage_search_index_request_gen.h"
 #include "mongo/db/query/search/mongot_cursor.h"
 #include "mongo/db/views/resolved_view.h"
+#include "mongo/platform/compiler.h"
 #include <boost/optional/optional.hpp>
 
 namespace mongo {
 
 using boost::intrusive_ptr;
 using std::list;
+
+namespace {
+/** Helper written in a particular redundant way to work around a GCC false-positive warning. */
+StringData removePrefixWorkaround(StringData key, StringData pre) {
+    MONGO_COMPILER_DIAGNOSTIC_PUSH
+    MONGO_COMPILER_DIAGNOSTIC_IGNORED_TRANSITIONAL("-Warray-bounds")
+    if (!key.starts_with(pre))
+        return key;
+    key.remove_prefix(pre.size());
+    MONGO_COMPILER_DIAGNOSTIC_POP
+    return key;
+}
+}  // namespace
 
 REGISTER_DOCUMENT_SOURCE(search,
                          LiteParsedSearchStage::parse,
@@ -64,21 +78,20 @@ REGISTER_DOCUMENT_SOURCE(searchBeta,
                          AllowedWithApiStrict::kNeverInVersion1);
 
 const char* DocumentSourceSearch::getSourceName() const {
-    return kStageName.rawData();
+    return kStageName.data();
 }
 
 Value DocumentSourceSearch::serialize(const SerializationOptions& opts) const {
-    if (!opts.isSerializingForExplain() || pExpCtx->getInRouter()) {
-        // When serializing $search, we only need to serialize the full mongot remote spec when
-        // in a sharded scenario (i.e., when we have a metadata merge protocol verison), regardless
-        // of whether we're on a router or a data-bearing node. Otherwise, we only need the mongot
-        if (_spec.getMetadataMergeProtocolVersion().has_value()) {
-            MutableDocument spec{Document(_spec.toBSON())};
-            if (_view) {
-                spec["view"] = Value(_view->toBSON());
-            }
-            return Value(Document{{getSourceName(), spec.freezeToValue()}});
+    // If we aren't serializing for query stats or explain, serialize the full spec.
+    // If we are in a router, serialize the full spec.
+    // Otherwise, just serialize the mongotQuery.
+    if ((!opts.isSerializingForQueryStats() && !opts.isSerializingForExplain()) ||
+        pExpCtx->getInRouter()) {
+        MutableDocument spec{Document(_spec.toBSON())};
+        if (_view) {
+            spec["view"] = Value(_view->toBSON());
         }
+        return Value(Document{{getSourceName(), spec.freezeToValue()}});
     }
     return Value(DOC(getSourceName() << opts.serializeLiteral(_spec.getMongotQuery())));
 }
@@ -242,9 +255,7 @@ void DocumentSourceSearch::validateSortSpec(boost::optional<BSONObj> sortSpec) {
         // to only contain top-level fields (no nested objects).
         for (auto&& k : *sortSpec) {
             auto key = k.fieldNameStringData();
-            if (key.startsWith(mongot_cursor::kSearchSortValuesFieldPrefix)) {
-                key = key.substr(mongot_cursor::kSearchSortValuesFieldPrefix.size());
-            }
+            key = removePrefixWorkaround(key, mongot_cursor::kSearchSortValuesFieldPrefix);
             tassert(7320404,
                     fmt::format("planShardedSearch returned sortSpec with key containing a dot: {}",
                                 key),

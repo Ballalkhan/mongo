@@ -81,19 +81,13 @@ bool isSearchPipeline(const Pipeline* pipeline);
  */
 bool isSearchMetaPipeline(const Pipeline* pipeline);
 
-/* This function is only called if the mongot pipeline is on a view. */
-void addResolvedNamespaceForSearch(const NamespaceString& origNss,
-                                   const ResolvedView& resolvedView,
-                                   boost::intrusive_ptr<ExpressionContext> expCtx);
-
 /**
- * A wrapper around addResolvedNamespaceForSearch that additionally checks that the pipeline
- * contains a search stage.
+ * Checks that the *user* pipeline contains a search stage and sets the view on expCtx.
  */
-void checkAndAddResolvedNamespaceForSearch(boost::intrusive_ptr<ExpressionContext> expCtx,
-                                           std::vector<mongo::BSONObj> pipelineObj,
-                                           ResolvedView resolvedView,
-                                           const NamespaceString& viewName);
+void checkAndSetViewOnExpCtx(boost::intrusive_ptr<ExpressionContext> expCtx,
+                             std::vector<mongo::BSONObj> pipelineObj,
+                             ResolvedView resolvedView,
+                             const NamespaceString& viewName);
 
 /**
  * Check if this is a stored source $search or $_internalSearchMongot pipeline.
@@ -200,40 +194,6 @@ std::unique_ptr<RemoteExplainVector> getSearchRemoteExplains(
 
 boost::optional<SearchQueryViewSpec> getViewFromBSONObj(
     boost::intrusive_ptr<ExpressionContext> expCtx, BSONObj spec);
-/**
- * Create the initial search pipeline which can be used for both $search and $searchMeta. The
- * returned list is unique and mutable.
- */
-template <typename TargetSearchDocumentSource>
-std::list<boost::intrusive_ptr<DocumentSource>> createInitialSearchPipeline(
-    BSONObj specObj, const boost::intrusive_ptr<ExpressionContext>& expCtx) {
-
-    uassert(6600901,
-            "Running search command in non-allowed context (update pipeline)",
-            !expCtx->getIsParsingPipelineUpdate());
-
-    auto view = search_helpers::getViewFromBSONObj(expCtx, specObj);
-
-    // This is only called from user pipelines during desugaring of $search/$searchMeta, so the
-    // `specObj` should be the search query itself.
-    auto executor =
-        executor::getMongotTaskExecutor(expCtx->getOperationContext()->getServiceContext());
-    if ((!expCtx->getMongoProcessInterface()->isExpectedToExecuteQueries() ||
-         !expCtx->getMongoProcessInterface()->inShardedEnvironment(
-             expCtx->getOperationContext())) ||
-        MONGO_unlikely(searchReturnEofImmediately.shouldFail())) {
-        return {
-            make_intrusive<TargetSearchDocumentSource>(std::move(specObj), expCtx, executor, view)};
-    }
-
-    // Send a planShardedSearch command to mongot to get the relevant planning information,
-    // including the metadata merging pipeline and the optional merge sort spec.
-    InternalSearchMongotRemoteSpec remoteSpec(specObj.getOwned());
-    planShardedSearch(expCtx, &remoteSpec);
-
-    return {
-        make_intrusive<TargetSearchDocumentSource>(std::move(remoteSpec), expCtx, executor, view)};
-}
 
 /**
  * Assert that the mongot stage is allowed to run on the view pipeline (i.e. the pipeline doesn't

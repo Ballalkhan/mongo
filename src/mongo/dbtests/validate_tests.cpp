@@ -81,6 +81,7 @@
 #include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/storage/key_format.h"
 #include "mongo/db/storage/key_string/key_string.h"
+#include "mongo/db/storage/mdb_catalog.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/snapshot.h"
@@ -2203,17 +2204,31 @@ public:
             {
                 const NamespaceString lostAndFoundNss = NamespaceString::makeLocalCollection(
                     "lost_and_found." + coll()->uuid().toString());
-                AutoGetCollectionForRead autoColl(&_opCtx, lostAndFoundNss);
+                const auto coll =
+                    acquireCollection(&_opCtx,
+                                      CollectionAcquisitionRequest(
+                                          lostAndFoundNss,
+                                          PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                          repl::ReadConcernArgs::get(&_opCtx),
+                                          AcquisitionPrerequisites::kRead),
+                                      MODE_IS);
                 Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(1), &result));
+                ASSERT(coll.getCollectionPtr()->findDoc(&_opCtx, RecordId(1), &result));
                 ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:1, a:1}"));
             }
 
             // Verify the newer duplicate document still appears in the collection as expected.
             {
-                AutoGetCollectionForRead autoColl(&_opCtx, _nss);
+                const auto coll =
+                    acquireCollection(&_opCtx,
+                                      CollectionAcquisitionRequest(
+                                          _nss,
+                                          PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                          repl::ReadConcernArgs::get(&_opCtx),
+                                          AcquisitionPrerequisites::kRead),
+                                      MODE_IS);
                 Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(3), &result));
+                ASSERT(coll.getCollectionPtr()->findDoc(&_opCtx, RecordId(3), &result));
                 ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:2, a:1}"));
             }
 
@@ -2460,17 +2475,31 @@ public:
             {
                 const NamespaceString lostAndFoundNss = NamespaceString::makeLocalCollection(
                     "lost_and_found." + coll()->uuid().toString());
-                AutoGetCollectionForRead autoColl(&_opCtx, lostAndFoundNss);
+                const auto coll =
+                    acquireCollection(&_opCtx,
+                                      CollectionAcquisitionRequest(
+                                          lostAndFoundNss,
+                                          PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                          repl::ReadConcernArgs::get(&_opCtx),
+                                          AcquisitionPrerequisites::kRead),
+                                      MODE_IS);
                 Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(1), &result));
+                ASSERT(coll.getCollectionPtr()->findDoc(&_opCtx, RecordId(1), &result));
                 ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:1, a:1, b:1}"));
             }
 
             // Verify the newer duplicate document still appears in the collection as expected.
             {
-                AutoGetCollectionForRead autoColl(&_opCtx, _nss);
+                const auto coll =
+                    acquireCollection(&_opCtx,
+                                      CollectionAcquisitionRequest(
+                                          _nss,
+                                          PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                          repl::ReadConcernArgs::get(&_opCtx),
+                                          AcquisitionPrerequisites::kRead),
+                                      MODE_IS);
                 Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(3), &result));
+                ASSERT(coll.getCollectionPtr()->findDoc(&_opCtx, RecordId(3), &result));
                 ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:2, a:1, b:1}"));
             }
 
@@ -2809,17 +2838,31 @@ public:
             {
                 const NamespaceString lostAndFoundNss = NamespaceString::makeLocalCollection(
                     "lost_and_found." + coll()->uuid().toString());
-                AutoGetCollectionForRead autoColl(&_opCtx, lostAndFoundNss);
+                const auto coll =
+                    acquireCollection(&_opCtx,
+                                      CollectionAcquisitionRequest(
+                                          lostAndFoundNss,
+                                          PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                          repl::ReadConcernArgs::get(&_opCtx),
+                                          AcquisitionPrerequisites::kRead),
+                                      MODE_IS);
                 Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(1), &result));
+                ASSERT(coll.getCollectionPtr()->findDoc(&_opCtx, RecordId(1), &result));
                 ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:1, a:1, b:1}"));
             }
 
             // Verify the newer duplicate document still appears in the collection as expected.
             {
-                AutoGetCollectionForRead autoColl(&_opCtx, _nss);
+                const auto coll =
+                    acquireCollection(&_opCtx,
+                                      CollectionAcquisitionRequest(
+                                          _nss,
+                                          PlacementConcern(boost::none, ShardVersion::UNSHARDED()),
+                                          repl::ReadConcernArgs::get(&_opCtx),
+                                          AcquisitionPrerequisites::kRead),
+                                      MODE_IS);
                 Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(3), &result));
+                ASSERT(coll.getCollectionPtr()->findDoc(&_opCtx, RecordId(3), &result));
                 ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:2, a:1, b:1}"));
             }
 
@@ -4077,8 +4120,8 @@ public:
         // of a pre-3.4 index.
         {
             beginTransaction();
-            auto collMetadata = DurableCatalog::get(&_opCtx)
-                                    ->getParsedCatalogEntry(&_opCtx, coll()->getCatalogId())
+            auto collMetadata = durable_catalog::getParsedCatalogEntry(
+                                    &_opCtx, coll()->getCatalogId(), MDBCatalog::get(&_opCtx))
                                     ->metadata;
             int offset = collMetadata->findIndexOffset(indexName);
             ASSERT_GTE(offset, 0);

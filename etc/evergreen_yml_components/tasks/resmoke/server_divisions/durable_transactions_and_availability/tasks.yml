@@ -333,6 +333,27 @@ tasks:
         vars:
           resmoke_jobs_max: 1
 
+  # TODO (SERVER-101590): Remove this temporary suite.
+  - <<: *gen_task_template
+    name: concurrency_replication_viewless_timeseries_gen
+    tags:
+      [
+        "assigned_to_jira_team_server_catalog_and_routing",
+        "requires_all_feature_flags",
+        "viewless_timeseries",
+        "release_critical",
+        "incompatible_mac",
+        "incompatible_ppc",
+        "incompatible_s390x",
+        "concurrency",
+        "common",
+        "repl",
+      ]
+    commands:
+      - func: "generate resmoke tasks"
+        vars:
+          resmoke_jobs_max: 1
+
   - <<: *gen_task_template
     name: concurrency_replication_multi_stmt_txn_gen
     tags:
@@ -490,6 +511,31 @@ tasks:
           use_large_distro: "true"
           resmoke_jobs_max: 1
 
+  # TODO (SERVER-101590): Remove this temporary suite.
+  - <<: *gen_task_template
+    name: concurrency_sharded_replication_viewless_timeseries_gen
+    tags:
+      [
+        "assigned_to_jira_team_server_catalog_and_routing",
+        "requires_all_feature_flags",
+        "viewless_timeseries",
+        "release_critical",
+        "incompatible_mac",
+        "incompatible_ppc",
+        "incompatible_s390x",
+        "incompatible_debug_mode",
+        "concurrency",
+        "common",
+        "read_concern_maj",
+        "large",
+        "sharded",
+      ]
+    commands:
+      - func: "generate resmoke tasks"
+        vars:
+          use_large_distro: "true"
+          resmoke_jobs_max: 1
+
   - <<: *gen_task_template
     name: concurrency_sharded_replication_multiversion_gen
     tags:
@@ -509,28 +555,6 @@ tasks:
         vars:
           resmoke_args: >-
             --runNoFeatureFlagTests
-
-  - <<: *gen_task_template
-    name: concurrency_sharded_replication_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_repl",
-        "release_critical",
-        "incompatible_mac",
-        "incompatible_ppc",
-        "incompatible_s390x",
-        "incompatible_debug_mode",
-        "concurrency",
-        "common",
-        "read_concern_maj",
-        "large",
-        "sharded",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
 
   - <<: *gen_task_template
     name: concurrency_simultaneous_replication_gen
@@ -695,7 +719,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication
           resmoke_args: --numClientsPerFixture=10
 
@@ -718,7 +742,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication_notablescan
           resmoke_args: --numClientsPerFixture=10
 
@@ -740,7 +764,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication_write_conflicts
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}' --numClientsPerFixture=10"
 
@@ -765,7 +789,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: 8
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication_fcbis
           resmoke_args: --storageEngine=wiredTiger
           name: jstestfuzz_replication_fcbis
@@ -792,7 +816,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -816,7 +840,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: 8
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication_initsync
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -844,7 +868,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           resmoke_args: >-
             --mongodSetParameters='{logComponentVerbosity: {command: 2}}'
             --runNoFeatureFlagTests
@@ -867,7 +891,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication_notablescan
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -889,7 +913,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication_write_conflicts
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -1817,7 +1841,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_replication
           resmoke_args: >-
             --numClientsPerFixture=10
@@ -1845,34 +1869,6 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           suite: concurrency_sharded_replication
-          resmoke_args: >-
-            --fuzzMongodConfigs=normal
-            --fuzzMongosConfigs=normal
-            --fuzzRuntimeParams
-            --excludeWithAnyTags=does_not_support_config_fuzzer
-          use_xlarge_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: config_fuzzer_concurrency_sharded_replication_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_repl",
-        "concurrency",
-        "config_fuzzer",
-        "default",
-        "large",
-        "sharded",
-        "incompatible_tsan",
-        "incompatible_aubsan",
-        "incompatible_debug_mode",
-        "incompatible_inmemory",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          suite: concurrency_sharded_replication_with_balancer
           resmoke_args: >-
             --fuzzMongodConfigs=normal
             --fuzzMongosConfigs=normal
@@ -2058,7 +2054,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz
           resmoke_args: --numClientsPerFixture=10
 
@@ -2080,7 +2076,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_interrupt
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -2102,7 +2098,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_interrupt_replication
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 

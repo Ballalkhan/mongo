@@ -743,10 +743,14 @@ public:
     /**
      * The stage spills its data and asks from all its children to spill their data as well.
      */
-    void forceSpill() {
+    void forceSpill(PlanYieldPolicy* yieldPolicy) {
+        if (yieldPolicy && yieldPolicy->shouldYieldOrInterrupt(_opCtx)) {
+            uassertStatusOK(yieldPolicy->yieldOrInterrupt(
+                _opCtx, nullptr, RestoreContext::RestoreType::kYield));
+        }
         doForceSpill();
         for (const auto& child : _children) {
-            child->forceSpill();
+            child->forceSpill(yieldPolicy);
         }
     }
 

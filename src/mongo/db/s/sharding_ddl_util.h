@@ -64,15 +64,9 @@
 
 namespace mongo {
 
-// Forward declaration
+// Forward declarations
 enum class AuthoritativeMetadataAccessLevelEnum : std::int32_t;
-
-// TODO (SERVER-74481): Define these functions in the nested `sharding_ddl_util` namespace when the
-// IDL compiler will support the use case.
-void sharding_ddl_util_serializeErrorStatusToBSON(const Status& status,
-                                                  StringData fieldName,
-                                                  BSONObjBuilder* bsonBuilder);
-Status sharding_ddl_util_deserializeErrorStatusFromBSON(const BSONElement& bsonElem);
+class NamespacePlacementChanged;
 
 namespace sharding_ddl_util {
 
@@ -109,6 +103,11 @@ std::vector<AsyncRequestsSender::Response> sendAuthenticatedCommandToShards(
 }
 
 /**
+ * Given a Status, returns a new truncated version of the Status or a copy of the Status.
+ */
+Status possiblyTruncateErrorStatus(const Status& status);
+
+/**
  * Creates a barrier after which we are guaranteed that all writes to the config server performed by
  * the previous primary have been majority commited and will be seen by the new primary.
  */
@@ -133,7 +132,8 @@ void removeCollAndChunksMetadataFromConfig(
     const CollectionType& coll,
     const WriteConcernOptions& writeConcern,
     const OperationSessionInfo& osi,
-    const std::shared_ptr<executor::TaskExecutor>& executor = nullptr);
+    const std::shared_ptr<executor::TaskExecutor>& executor = nullptr,
+    bool logCommitOnConfigPlacementHistory = true);
 
 /**
  * Delete the query analyzer document associated to the passed in namespace.
@@ -354,6 +354,16 @@ void sendFetchCollMetadataToShards(OperationContext* opCtx,
  */
 AuthoritativeMetadataAccessLevelEnum getGrantedAuthoritativeMetadataAccessLevel(
     const VersionContext& vCtx, const ServerGlobalParams::FCVSnapshot& snapshot);
+
+boost::optional<ShardId> pickDataBearingShard(OperationContext* opCtx, const UUID& collUuid);
+
+void generatePlacementChangeNotificationOnShard(
+    OperationContext* opCtx,
+    const NamespacePlacementChanged& placementChangeNotification,
+    const ShardId& shard,
+    const OperationSessionInfo& osi,
+    const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
+    const CancellationToken& token);
 
 }  // namespace sharding_ddl_util
 }  // namespace mongo

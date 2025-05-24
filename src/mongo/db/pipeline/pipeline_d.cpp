@@ -1590,7 +1590,8 @@ bool PipelineD::sortAndKeyPatternPartAgreeAndOnMeta(
     const timeseries::BucketUnpacker& bucketUnpacker,
     StringData keyPatternFieldName,
     const FieldPath& sortFieldPath) {
-    FieldPath keyPatternFieldPath = FieldPath(keyPatternFieldName);
+    FieldPath keyPatternFieldPath = FieldPath(
+        keyPatternFieldName, false /* precomputeHashes */, false /* validateFieldNames */);
 
     // If they don't have the same path length they cannot agree.
     if (keyPatternFieldPath.getPathLength() != sortFieldPath.getPathLength())
@@ -2095,7 +2096,7 @@ void PipelineD::performBoundedSortOptimization(PlanStage* rootStage,
             tassert(6434901,
                     "we must erase a $sort stage and replace it with a bounded sort stage",
                     strncmp((*iter)->getSourceName(),
-                            DocumentSourceSort::kStageName.rawData(),
+                            DocumentSourceSort::kStageName.data(),
                             DocumentSourceSort::kStageName.length()) == 0);
             pipeline->_sources.erase(iter);
             pipeline->stitch();

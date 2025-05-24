@@ -16,8 +16,6 @@
  * - behavior: Must be one of "unshardedOnly", "targetsPrimaryUsesConnectionVersioning" or
  * "versioned". Determines what system profiler checks are performed.
  * @tags: [
- *    # TODO (SERVER-97257): Re-enable this test or add an explanation why it is incompatible.
- *    embedded_router_incompatible,
  *    requires_scripting,
  * ]
  */
@@ -64,10 +62,8 @@ let testCases = {
     _configsvrCommitChunksMerge: {skip: "primary only"},
     _configsvrCommitChunkMigration: {skip: "primary only"},
     _configsvrCommitChunkSplit: {skip: "primary only"},
-    _configsvrCommitIndex: {skip: "primary only"},
     _configsvrCommitMergeAllChunksOnShard: {skip: "primary only"},
     _configsvrConfigureCollectionBalancing: {skip: "primary only"},
-    _configsvrDropIndexCatalogEntry: {skip: "primary only"},
     _configsvrMoveRange: {skip: "primary only"},
     _configsvrRemoveChunks: {skip: "primary only"},
     _configsvrRemoveShardFromZone: {skip: "primary only"},

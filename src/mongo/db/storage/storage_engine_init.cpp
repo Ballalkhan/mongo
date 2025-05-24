@@ -77,6 +77,9 @@ void createLockFile(ServiceContext* service);
 StorageEngine::LastShutdownState initializeStorageEngine(
     OperationContext* opCtx,
     const StorageEngineInitFlags initFlags,
+    bool isReplSet,
+    bool shouldRecoverFromOplogAsStandalone,
+    bool inStandaloneMode,
     BSONObjBuilder* startupTimeElapsedBuilder) {
     ServiceContext* service = opCtx->getServiceContext();
 
@@ -180,14 +183,24 @@ StorageEngine::LastShutdownState initializeStorageEngine(
                                        TimedSectionId::createStorageEngine,
                                        startupTimeElapsedBuilder);
         if ((initFlags & StorageEngineInitFlags::kForRestart) == StorageEngineInitFlags{}) {
-            auto storageEngine = std::unique_ptr<StorageEngine>(
-                factory->create(opCtx, storageGlobalParams, lockFile ? &*lockFile : nullptr));
+            auto storageEngine =
+                std::unique_ptr<StorageEngine>(factory->create(opCtx,
+                                                               storageGlobalParams,
+                                                               lockFile ? &*lockFile : nullptr,
+                                                               isReplSet,
+                                                               shouldRecoverFromOplogAsStandalone,
+                                                               inStandaloneMode));
             service->setStorageEngine(std::move(storageEngine));
         } else {
             auto storageEngineChangeContext = StorageEngineChangeContext::get(service);
             auto lk = storageEngineChangeContext->killOpsForStorageEngineChange(service);
-            auto storageEngine = std::unique_ptr<StorageEngine>(
-                factory->create(opCtx, storageGlobalParams, lockFile ? &*lockFile : nullptr));
+            auto storageEngine =
+                std::unique_ptr<StorageEngine>(factory->create(opCtx,
+                                                               storageGlobalParams,
+                                                               lockFile ? &*lockFile : nullptr,
+                                                               isReplSet,
+                                                               shouldRecoverFromOplogAsStandalone,
+                                                               inStandaloneMode));
             storageEngineChangeContext->changeStorageEngine(
                 service, std::move(lk), std::move(storageEngine));
         }
@@ -234,6 +247,9 @@ void shutdownGlobalStorageEngineCleanly(ServiceContext* service) {
 StorageEngine::LastShutdownState reinitializeStorageEngine(
     OperationContext* opCtx,
     StorageEngineInitFlags initFlags,
+    bool isReplSet,
+    bool shouldRecoverFromOplogAsStandalone,
+    bool inStandaloneMode,
     std::function<void()> changeConfigurationCallback) {
     auto service = opCtx->getServiceContext();
     shard_role_details::getRecoveryUnit(opCtx)->abandonSnapshot();
@@ -243,7 +259,11 @@ StorageEngine::LastShutdownState reinitializeStorageEngine(
                                         WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
     changeConfigurationCallback();
     auto lastShutdownState =
-        initializeStorageEngine(opCtx, initFlags | StorageEngineInitFlags::kForRestart);
+        initializeStorageEngine(opCtx,
+                                initFlags | StorageEngineInitFlags::kForRestart,
+                                isReplSet,
+                                shouldRecoverFromOplogAsStandalone,
+                                inStandaloneMode);
     StorageControl::startStorageControls(service);
     return lastShutdownState;
 }

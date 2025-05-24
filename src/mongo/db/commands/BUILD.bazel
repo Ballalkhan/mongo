@@ -633,6 +633,7 @@ mongo_cc_library(
         "//src/mongo/db/exec:sort_key_comparator.h",
         "//src/mongo/db/exec:working_set.h",
         "//src/mongo/db/exec:working_set_common.h",
+        "//src/mongo/db/exec/agg:exec_pipeline.h",
         "//src/mongo/db/exec/agg:stage.h",
         "//src/mongo/db/exec/document_value:document_comparator.h",
         "//src/mongo/db/exec/document_value:value_comparator.h",
@@ -793,7 +794,6 @@ mongo_cc_library(
         "//src/mongo/db/session:logical_session_id_gen",
         "//src/mongo/db/sorter:sorter_gen",
         "//src/mongo/db/stats:counters.h",
-        "//src/mongo/db/stats:resource_consumption_metrics.h",
         "//src/mongo/db/storage:bson_collection_catalog_entry.h",
         "//src/mongo/db/storage:durable_catalog_entry.h",
         "//src/mongo/db/storage:index_entry_comparison.h",
@@ -825,14 +825,12 @@ mongo_cc_library(
         "//src/mongo/s/catalog:type_chunk_range.h",
         "//src/mongo/s/catalog:type_chunk_range_base_gen",
         "//src/mongo/s/catalog:type_database_gen",
-        "//src/mongo/s/catalog:type_index_catalog.h",
         "//src/mongo/s/catalog:type_index_catalog_gen",
         "//src/mongo/s/catalog:types_validators.h",
         "//src/mongo/s/resharding:common_types_gen",
         "//src/mongo/s/resharding:type_collection_fields_gen",
         "//src/mongo/scripting:engine.h",
         "//src/mongo/util:elapsed_tracker.h",
-        "//src/mongo/util:hash_utils.h",
         "//src/mongo/util:histogram.h",
         "//src/mongo/util:id_generator.h",
         "//src/mongo/util:lazily_initialized.h",
@@ -1218,17 +1216,17 @@ mongo_cc_library(
 mongo_cc_library(
     name = "set_cluster_parameter_impl",
     srcs = [
-        "set_cluster_parameter_command_impl.cpp",
+        "set_cluster_parameter_replset_impl.cpp",
     ],
     hdrs = [
-        "set_cluster_parameter_command_impl.h",
+        "set_cluster_parameter_replset_impl.h",
     ],
     deps = [
         ":cluster_server_parameter_commands_invocation",
         ":mongod_fcv",
         "//src/mongo/db:dbdirectclient",
         "//src/mongo/db:server_feature_flags",
-        "//src/mongo/s:grid",
+        "//src/mongo/db/query/query_settings:query_settings_service_dependencies",
     ],
 )
 
@@ -1505,6 +1503,7 @@ mongo_cc_library(
         "//src/mongo/db/pipeline/process_interface:mongod_process_interfaces",
         "//src/mongo/db/query:command_request_response",
         "//src/mongo/db/query:explain_diagnostic_printer",
+        "//src/mongo/db/query:plan_yield_policy_release_memory",
         "//src/mongo/db/query:shard_key_diagnostic_printer",
         "//src/mongo/db/query/client_cursor:cursor_response_idl",
         "//src/mongo/db/query/query_settings:query_settings_service",
@@ -1652,7 +1651,6 @@ mongo_cc_library(
         "//src/mongo/db/repl/dbcheck",
         "//src/mongo/db/s:sharding_catalog_manager",
         "//src/mongo/db/s:sharding_commands_d",
-        "//src/mongo/db/s:sharding_runtime_d",
         "//src/mongo/db/s:transaction_coordinator",
         "//src/mongo/db/s:user_writes_recoverable_critical_section",
         "//src/mongo/db/stats:top",
@@ -1711,7 +1709,6 @@ mongo_cc_unit_test(
     name = "db_commands_test",
     srcs = [
         "create_command_test.cpp",
-        "create_indexes_test.cpp",
         "list_collections_filter_test.cpp",
         "parse_log_component_settings_test.cpp",
         "profile_cmd_test.cpp",
@@ -1778,6 +1775,22 @@ mongo_cc_unit_test(
         "//src/mongo/idl:server_parameter_test_util",
         "//src/mongo/shell:kms_idl",
         "//src/mongo/util:version_impl",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "create_indexes_command_test",
+    srcs = [
+        "create_indexes_test.cpp",
+    ],
+    tags = [
+        "mongo_unittest_fifth_group",
+        "server-index-builds",
+    ],
+    deps = [
+        "//src/mongo/db:dbdirectclient",
+        "//src/mongo/db/catalog:catalog_test_fixture",
+        "//src/mongo/db/repl:storage_interface_impl",
     ],
 )
 

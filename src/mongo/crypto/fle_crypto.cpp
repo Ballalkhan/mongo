@@ -853,7 +853,7 @@ std::vector<EdgeTokenSetV2> getEdgeTokenSet(
     std::vector<EdgeTokenSetV2> tokens;
 
     for (const auto& edge : edgesList) {
-        ConstDataRange cdr(edge.rawData(), edge.size());
+        ConstDataRange cdr(edge.data(), edge.size());
 
         EDCDerivedFromDataToken edcDatakey = EDCDerivedFromDataToken::deriveFrom(edcToken, cdr);
         ESCDerivedFromDataToken escDatakey = ESCDerivedFromDataToken::deriveFrom(escToken, cdr);
@@ -1608,7 +1608,7 @@ BSONObj runStateMachineForEncryption(mongocrypt_ctx_t* ctx,
                 uassert(7132300,
                         "Invalid command obtained from mongocrypt_ctx_mongo_op",
                         !opCmdName.empty());
-                if (opCmdName.equalCaseInsensitive("isMaster")) {
+                if (str::equalCaseInsensitive(opCmdName, "isMaster")) {
                     BSONObjBuilder bob;
                     auto wireSpec = WireSpec::getWireSpec(getGlobalServiceContext()).get();
                     bob.append("maxWireVersion", wireSpec->incomingExternalClient.maxWireVersion);
@@ -2861,6 +2861,33 @@ ECOCCompactionDocumentV2 ECOCCompactionDocumentV2::parseAndDecrypt(const BSONObj
     return ret;
 }
 
+FLE2TagAndEncryptedMetadataBlockView::FLE2TagAndEncryptedMetadataBlockView(ConstDataRange cdr)
+    : encryptedCounts(nullptr, nullptr), tag(nullptr, nullptr), encryptedZeros(nullptr, nullptr) {
+    uassert(10164500,
+            "Encountered Queryable Encryption metadata block with invalid size",
+            cdr.length() == sizeof(FLE2TagAndEncryptedMetadataBlock::SerializedBlob));
+    std::tie(encryptedCounts, tag) =
+        cdr.split(sizeof(FLE2TagAndEncryptedMetadataBlock::EncryptedCountersBlob));
+    std::tie(tag, encryptedZeros) = tag.split(sizeof(PrfBlock));
+}
+
+FLE2TagAndEncryptedMetadataBlockView::FLE2TagAndEncryptedMetadataBlockView(ConstDataRange countsBuf,
+                                                                           ConstDataRange tagBuf,
+                                                                           ConstDataRange zerosBuf)
+    : encryptedCounts(countsBuf), tag(tagBuf), encryptedZeros(zerosBuf) {
+    uassert(10164501,
+            "Encountered Queryable Encryption encrypted counters with invalid size",
+            encryptedCounts.length() ==
+                sizeof(FLE2TagAndEncryptedMetadataBlock::EncryptedCountersBlob));
+    uassert(10164502,
+            "Encountered Queryable Encryption tag with invalid size",
+            tag.length() == sizeof(PrfBlock));
+    uassert(10164503,
+            "Encountered Queryable Encryption encrypted zeros with invalid size",
+            encryptedZeros.length() ==
+                sizeof(FLE2TagAndEncryptedMetadataBlock::EncryptedZerosBlob));
+}
+
 FLE2TagAndEncryptedMetadataBlock::FLE2TagAndEncryptedMetadataBlock(uint64_t countParam,
                                                                    uint64_t contentionParam,
                                                                    PrfBlock tagParam)
@@ -2916,28 +2943,16 @@ StatusWith<std::vector<uint8_t>> FLE2TagAndEncryptedMetadataBlock::serialize(
 }
 
 StatusWith<FLE2TagAndEncryptedMetadataBlock> FLE2TagAndEncryptedMetadataBlock::decryptAndParse(
-    ServerDerivedFromDataToken token, ConstDataRange serializedBlock) {
-
-    ConstDataRangeCursor blobCdrc(serializedBlock);
-
-    auto swCountersBlob = blobCdrc.readAndAdvanceNoThrow<EncryptedCountersBlob>();
-    if (!swCountersBlob.isOK()) {
-        return swCountersBlob.getStatus();
-    }
-
-    auto swTag = blobCdrc.readAndAdvanceNoThrow<PrfBlock>();
-    if (!swTag.isOK()) {
-        return swTag.getStatus();
-    }
+    ServerDerivedFromDataToken token, const FLE2TagAndEncryptedMetadataBlockView& blk) {
 
     auto zerosEncryptionToken = ServerZerosEncryptionToken::deriveFrom(token);
 
-    auto swZeros = decryptZerosBlob(zerosEncryptionToken, serializedBlock);
+    auto swZeros = decryptZerosBlob(zerosEncryptionToken, blk);
 
     auto countEncryptionToken = ServerCountAndContentionFactorEncryptionToken::deriveFrom(token);
 
-    auto swCounters = decryptAndUnpack<uint64_t, uint64_t>(
-        ConstDataRange(swCountersBlob.getValue()), countEncryptionToken);
+    auto swCounters =
+        decryptAndUnpack<uint64_t, uint64_t>(blk.encryptedCounts, countEncryptionToken);
     if (!swCounters.isOK()) {
         return swCounters.getStatus();
     }
@@ -2945,52 +2960,20 @@ StatusWith<FLE2TagAndEncryptedMetadataBlock> FLE2TagAndEncryptedMetadataBlock::d
     auto contentionFactor = std::get<1>(swCounters.getValue());
 
     return FLE2TagAndEncryptedMetadataBlock(
-        count, contentionFactor, swTag.getValue(), swZeros.getValue());
-}
-
-StatusWith<FLE2TagAndEncryptedMetadataBlock> FLE2TagAndEncryptedMetadataBlock::decryptAndParse(
-    ServerDerivedFromDataToken token, const FLE2TagAndEncryptedMetadataBlockView& blk) {
-    std::vector<uint8_t> buf;
-    buf.reserve(blk.encryptedCounts.length() + blk.encryptedZeros.length() + blk.tag.length());
-    std::copy(blk.encryptedCounts.data(),
-              blk.encryptedCounts.data() + blk.encryptedCounts.length(),
-              std::back_inserter(buf));
-    std::copy(blk.tag.data(), blk.tag.data() + blk.tag.length(), std::back_inserter(buf));
-    std::copy(blk.encryptedZeros.data(),
-              blk.encryptedZeros.data() + blk.encryptedZeros.length(),
-              std::back_inserter(buf));
-    return decryptAndParse(token, buf);
-}
-
-StatusWith<PrfBlock> FLE2TagAndEncryptedMetadataBlock::parseTag(ConstDataRange serializedBlock) {
-    ConstDataRangeCursor blobCdrc(serializedBlock);
-    auto st = blobCdrc.advanceNoThrow(sizeof(EncryptedCountersBlob));
-    if (!st.isOK()) {
-        return st;
-    }
-    return blobCdrc.readAndAdvanceNoThrow<PrfBlock>();
+        count, contentionFactor, PrfBlockfromCDR(blk.tag), swZeros.getValue());
 }
 
 StatusWith<FLE2TagAndEncryptedMetadataBlock::ZerosBlob>
-FLE2TagAndEncryptedMetadataBlock::decryptZerosBlob(ServerZerosEncryptionToken zerosEncryptionToken,
-                                                   ConstDataRange serializedBlock) {
-    ConstDataRangeCursor blobCdrc(serializedBlock);
-
-    auto st = blobCdrc.advanceNoThrow(sizeof(EncryptedCountersBlob) + sizeof(PrfBlock));
-    if (!st.isOK()) {
-        return st;
-    }
-    auto swZerosBlob = blobCdrc.readAndAdvanceNoThrow<EncryptedZerosBlob>();
-    if (!swZerosBlob.isOK()) {
-        return swZerosBlob.getStatus();
-    }
+FLE2TagAndEncryptedMetadataBlock::decryptZerosBlob(
+    ServerZerosEncryptionToken zerosEncryptionToken,
+    const FLE2TagAndEncryptedMetadataBlockView& block) {
+    dassert(block.encryptedZeros.length() == sizeof(EncryptedZerosBlob));
 
     auto swDecryptedZeros =
-        FLEUtil::decryptData(zerosEncryptionToken.toCDR(), ConstDataRange(swZerosBlob.getValue()));
+        FLEUtil::decryptData(zerosEncryptionToken.toCDR(), block.encryptedZeros);
     if (!swDecryptedZeros.isOK()) {
         return swDecryptedZeros.getStatus();
     }
-
     ConstDataRangeCursor zerosCdrc(swDecryptedZeros.getValue());
     return zerosCdrc.readAndAdvanceNoThrow<ZerosBlob>();
 }
@@ -3001,6 +2984,7 @@ bool FLE2TagAndEncryptedMetadataBlock::isValidZerosBlob(const ZerosBlob& blob) {
     uint64_t low = cdrc.readAndAdvance<uint64_t>();
     return !(high | low);
 }
+
 FLE2IndexedEqualityEncryptedValueV2::FLE2IndexedEqualityEncryptedValueV2()
     : _value(mc_FLE2IndexedEncryptedValueV2_new()) {}
 
@@ -3091,22 +3075,11 @@ PrfBlock FLE2IndexedEqualityEncryptedValueV2::getMetadataBlockTag() const {
     return *_cachedMetadataBlockTag;
 }
 
-ConstDataRange FLE2IndexedEqualityEncryptedValueV2::getRawMetadataBlock() const {
-    if (!_cachedRawMetadata) {
-        // TODO SERVER-96973 Move this functionality to mc_FLE2TagAndEncryptedMetadataBlock_t
-        auto encCount = MongoCryptBuffer::borrow(&_value->metadata->encryptedCount).toCDR();
-        auto tag = MongoCryptBuffer::borrow(&_value->metadata->tag).toCDR();
-        auto encZeros = MongoCryptBuffer::borrow(&_value->metadata->encryptedZeros).toCDR();
-        _cachedRawMetadata = std::vector<std::uint8_t>();
-        std::copy(encCount.data(),
-                  encCount.data() + encCount.length(),
-                  std::back_inserter(*_cachedRawMetadata));
-        std::copy(tag.data(), tag.data() + tag.length(), std::back_inserter(*_cachedRawMetadata));
-        std::copy(encZeros.data(),
-                  encZeros.data() + encZeros.length(),
-                  std::back_inserter(*_cachedRawMetadata));
-    }
-    return ConstDataRange(*_cachedRawMetadata);
+FLE2TagAndEncryptedMetadataBlockView FLE2IndexedEqualityEncryptedValueV2::getRawMetadataBlock()
+    const {
+    return {MongoCryptBuffer::borrow(&_value->metadata->encryptedCount).toCDR(),
+            MongoCryptBuffer::borrow(&_value->metadata->tag).toCDR(),
+            MongoCryptBuffer::borrow(&_value->metadata->encryptedZeros).toCDR()};
 }
 
 UUID FLE2IndexedEqualityEncryptedValueV2::getKeyId() const {
@@ -3295,7 +3268,7 @@ FLE2IndexedRangeEncryptedValueV2::parseAndValidateFields(ConstDataRange serializ
     ConstDataRange encryptedDataCdrc(serializedServerCdrc.data(), encryptedDataSize);
     serializedServerCdrc.advance(encryptedDataSize);
 
-    std::vector<ConstDataRange> metadataBlocks;
+    std::vector<FLE2TagAndEncryptedMetadataBlockView> metadataBlocks;
     metadataBlocks.reserve(edgeCount);
 
     for (uint8_t i = 0; i < edgeCount; i++) {
@@ -3331,10 +3304,8 @@ FLE2IndexedRangeEncryptedValueV2::parseAndDecryptMetadataBlocks(
 
     std::vector<FLE2TagAndEncryptedMetadataBlock> metadataBlocks;
     for (uint8_t i = 0; i < edgeCount; i++) {
-        auto encryptedMetadataBlockCDR = swFields.getValue().metadataBlocks[i];
-
         auto swMetadataBlock = FLE2TagAndEncryptedMetadataBlock::decryptAndParse(
-            serverDataDerivedTokens[i], encryptedMetadataBlockCDR);
+            serverDataDerivedTokens[i], swFields.getValue().metadataBlocks[i]);
 
         if (!swMetadataBlock.isOK()) {
             return swMetadataBlock.getStatus();
@@ -3356,12 +3327,7 @@ StatusWith<std::vector<PrfBlock>> FLE2IndexedRangeEncryptedValueV2::parseMetadat
     tags.reserve(edgeCount);
 
     for (uint8_t i = 0; i < edgeCount; i++) {
-        auto swTag =
-            FLE2TagAndEncryptedMetadataBlock::parseTag(swFields.getValue().metadataBlocks[i]);
-        if (!swTag.isOK()) {
-            return swTag.getStatus();
-        }
-        tags.push_back(swTag.getValue());
+        tags.push_back(PrfBlockfromCDR(swFields.getValue().metadataBlocks[i].tag));
     }
     return tags;
 }
@@ -3467,26 +3433,27 @@ FLE2IndexedTextEncryptedValue FLE2IndexedTextEncryptedValue::fromUnencrypted(
 
     auto& tsts = payload.getTextSearchTokenSets().value();
 
-    // Ensure the total tags will not overflow the 8-bit counter
-    uint8_t tagLimit = std::numeric_limits<uint8_t>::max() - 1;  // subtract one for exact match tag
+    // Ensure the total tags will not overflow the per-field tag limit.
+    uint32_t tagLimit = EncryptionInformationHelpers::kFLE2PerFieldTagLimit -
+        1;  // subtract one for exact match tag
 
     uassert(9784104,
             "InsertUpdatePayload substring token sets size is too large",
             tsts.getSubstringTokenSets().size() <= tagLimit);
-    uint8_t substrTagCount = static_cast<uint8_t>(tsts.getSubstringTokenSets().size());
+    uint32_t substrTagCount = static_cast<uint32_t>(tsts.getSubstringTokenSets().size());
     tagLimit -= substrTagCount;
 
     uassert(9784105,
             "InsertUpdatePayload suffix token sets size is too large",
             tsts.getSuffixTokenSets().size() <= tagLimit);
-    uint8_t suffixTagCount = static_cast<uint8_t>(tsts.getSuffixTokenSets().size());
+    uint32_t suffixTagCount = static_cast<uint32_t>(tsts.getSuffixTokenSets().size());
     tagLimit -= suffixTagCount;
 
     uassert(9784106,
             "InsertUpdatePayload prefix token sets size is too large",
             tsts.getPrefixTokenSets().size() <= tagLimit);
-    uint8_t totalTagCount = 1 + substrTagCount + suffixTagCount +
-        static_cast<uint8_t>(tsts.getPrefixTokenSets().size());
+    uint32_t totalTagCount = 1 + substrTagCount + suffixTagCount +
+        static_cast<uint32_t>(tsts.getPrefixTokenSets().size());
 
     uassert(9784113,
             "FLE2IndexedTextEncryptedValueV2 tags length must equal the total number of text "
@@ -3599,19 +3566,19 @@ ConstDataRange FLE2IndexedTextEncryptedValue::getServerEncryptedValue() const {
     return MongoCryptBuffer::borrow(&_value->ServerEncryptedValue).toCDR();
 }
 
-uint8_t FLE2IndexedTextEncryptedValue::getTagCount() const {
+uint32_t FLE2IndexedTextEncryptedValue::getTagCount() const {
     return _value->edge_count;
 }
 
-uint8_t FLE2IndexedTextEncryptedValue::getSubstringTagCount() const {
+uint32_t FLE2IndexedTextEncryptedValue::getSubstringTagCount() const {
     return _value->substr_tag_count;
 }
 
-uint8_t FLE2IndexedTextEncryptedValue::getSuffixTagCount() const {
+uint32_t FLE2IndexedTextEncryptedValue::getSuffixTagCount() const {
     return _value->suffix_tag_count;
 }
 
-uint8_t FLE2IndexedTextEncryptedValue::getPrefixTagCount() const {
+uint32_t FLE2IndexedTextEncryptedValue::getPrefixTagCount() const {
     auto otherTagCount = getSubstringTagCount() + getSuffixTagCount() + 1;
     dassert(getTagCount() >= otherTagCount);
     return getTagCount() - otherTagCount;
@@ -4097,6 +4064,49 @@ EncryptedFieldConfig EncryptionInformationHelpers::getAndValidateSchema(
     return efc;
 }
 
+void EncryptionInformationHelpers::checkPerFieldTagLimitNotExceeded(
+    const EncryptedFieldConfig& ef) {
+
+    auto calculateMaxTags = [](const QueryTypeConfig qtc) -> uint32_t {
+        if (!isFLE2TextQueryType(qtc.getQueryType())) {
+            return 0;
+        }
+        int32_t ub = qtc.getStrMaxQueryLength().get();
+        int32_t lb = qtc.getStrMinQueryLength().get();
+        if (qtc.getQueryType() == QueryTypeEnum::SubstringPreview) {
+            int32_t mlen = static_cast<uint32_t>(qtc.getStrMaxLength().get());
+            return maxTagsForSubstring(lb, ub, mlen);
+        }
+        return maxTagsForSuffixOrPrefix(lb, ub);
+    };
+
+    for (const auto& field : ef.getFields()) {
+        if (!field.getQueries()) {
+            continue;
+        }
+
+        auto tagCount =
+            visit(OverloadedVisitor{[&](QueryTypeConfig qtc) { return calculateMaxTags(qtc); },
+                                    [&](std::vector<QueryTypeConfig> queries) {
+                                        uint32_t maxTags = 0;
+                                        for (auto& qtc : queries) {
+                                            maxTags += calculateMaxTags(qtc);
+                                        }
+                                        return maxTags;
+                                    }},
+                  field.getQueries().get());
+        if (hasQueryTypeMatching(field, isFLE2TextQueryType)) {
+            tagCount++;  // substring/suffix/prefix types get an extra tag for exact string match
+            uassert(
+                10384602,
+                fmt::format("Queryable Encryption tag limit exceeded for field '{}'. Worst case "
+                            "tag count is {}",
+                            field.getPath(),
+                            tagCount),
+                tagCount <= kFLE2PerFieldTagLimit);
+        }
+    }
+}
 
 std::pair<EncryptedBinDataType, ConstDataRange> fromEncryptedConstDataRange(ConstDataRange cdr) {
     ConstDataRangeCursor cdrc(cdr);
@@ -4171,6 +4181,51 @@ ParsedFindRangePayload::ParsedFindRangePayload(ConstDataRange cdr) {
     }
 
     maxCounter = info.getMaxCounter();
+}
+
+ParsedFindTextSearchPayload::ParsedFindTextSearchPayload(BSONElement fleFindPayload) {
+    // We should never parse a BSONElement payload since we don't support match expressions.
+    MONGO_UNREACHABLE_TASSERT(10112804);
+};
+
+ParsedFindTextSearchPayload::ParsedFindTextSearchPayload(const Value& fleFindPayload)
+    : ParsedFindTextSearchPayload(binDataToCDR(fleFindPayload)) {};
+
+ParsedFindTextSearchPayload::ParsedFindTextSearchPayload(ConstDataRange cdr) {
+    auto [encryptedTypeBinding, subCdr] = fromEncryptedConstDataRange(cdr);
+    auto encryptedType = encryptedTypeBinding;
+    uassert(10112800,
+            str::stream() << "Unexpected encrypted payload type: "
+                          << static_cast<uint32_t>(encryptedType),
+            encryptedType == EncryptedBinDataType::kFLE2FindTextPayload);
+
+    auto payload = parseFromCDR<FLE2FindTextPayload>(subCdr);
+
+    mongo::TextSearchFindTokenSets& tokens = payload.getTokenSets();
+
+    // There must be only one of the following in the payload
+    prefixTokens = tokens.getPrefixTokens();
+    suffixTokens = tokens.getSuffixTokens();
+    exactTokens = tokens.getExactTokens();
+    substringTokens = tokens.getSubstringTokens();
+
+    if (prefixTokens) {
+        edc = EDCDerivedFromDataToken{prefixTokens->getEdcDerivedToken().asPrfBlock()};
+        esc = ESCDerivedFromDataToken{prefixTokens->getEscDerivedToken().asPrfBlock()};
+        server = ServerDerivedFromDataToken{prefixTokens->getServerDerivedToken().asPrfBlock()};
+    } else if (suffixTokens) {
+        edc = EDCDerivedFromDataToken{suffixTokens->getEdcDerivedToken().asPrfBlock()};
+        esc = ESCDerivedFromDataToken{suffixTokens->getEscDerivedToken().asPrfBlock()};
+        server = ServerDerivedFromDataToken{suffixTokens->getServerDerivedToken().asPrfBlock()};
+    } else if (substringTokens) {
+        edc = EDCDerivedFromDataToken{substringTokens->getEdcDerivedToken().asPrfBlock()};
+        esc = ESCDerivedFromDataToken{substringTokens->getEscDerivedToken().asPrfBlock()};
+        server = ServerDerivedFromDataToken{substringTokens->getServerDerivedToken().asPrfBlock()};
+    }
+
+    // TODO SERVER-102560: set edc, esc, server for exact tokens.
+
+    maxCounter = payload.getMaxCounter();
 }
 
 
@@ -4305,7 +4360,8 @@ EncryptedPredicateEvaluatorV2::EncryptedPredicateEvaluatorV2(
 bool EncryptedPredicateEvaluatorV2::evaluate(
     Value fieldValue,
     EncryptedBinDataType indexedValueType,
-    std::function<std::vector<ConstDataRange>(ConstDataRange)> extractMetadataBlocks) const {
+    std::function<std::vector<FLE2TagAndEncryptedMetadataBlockView>(ConstDataRange)>
+        extractMetadataBlocks) const {
 
     if (fieldValue.getType() != BinData) {
         return false;
@@ -4316,7 +4372,8 @@ bool EncryptedPredicateEvaluatorV2::evaluate(
     uassert(7399501, "Invalid encrypted indexed field", subSubType == indexedValueType);
 
     auto binData = fieldValue.getBinData();
-    std::vector<ConstDataRange> metadataBlocks = extractMetadataBlocks(binDataToCDR(binData));
+    std::vector<FLE2TagAndEncryptedMetadataBlockView> metadataBlocks =
+        extractMetadataBlocks(binDataToCDR(binData));
 
     for (const auto& zeroDecryptionToken : _zerosDecryptionTokens) {
         for (auto metadataBlock : metadataBlocks) {
@@ -4703,6 +4760,105 @@ std::vector<std::string> minCoverDecimal128(Decimal128 lowerBound,
         return {};
     }
     return minCover(a.value, b.value, a.min, a.max, sparsity, trimFactor);
+}
+
+namespace {
+int32_t calculatePaddedLengthForString(int32_t strLen) {
+    // See
+    // https://github.com/10gen/mongo/blob/master/src/mongo/db/modules/enterprise/docs/fle/fle_string_search.md#strencode-substring
+    // for an explanation of the padlen calculation below.
+    dassert(strLen >= 0);
+    static constexpr int32_t kBSONStringOverheadBytes = 5;  // 4-byte size + null terminator byte
+
+    uassert(10384600,
+            fmt::format(
+                "String length {} is too long for substring/suffix/prefix indexed encrypted field",
+                strLen),
+            strLen <= std::numeric_limits<int32_t>::max() - kBSONStringOverheadBytes - 15);
+
+    // round strLen + overhead to the nearest 16-byte boundary
+    int32_t padLen = ((strLen + kBSONStringOverheadBytes + 15) / 16) * 16;
+
+    // readjust for BSON overhead
+    padLen -= kBSONStringOverheadBytes;
+    return padLen;
+}
+
+uint32_t calculateMsize(int32_t strLen, int32_t lb, int32_t ub) {
+    // OST calculates the substring tag count (msize) generally as:
+    //
+    //    msize = Summation(j=[lb...ub], (strLen-j+1))
+    //
+    // where lb and ub are the shortest and longest substring lengths to index,
+    // respectively, and strLen is the length of the string to index.
+    //
+    // For each j, the value of (strLen-j+1) is just one less than the previous value.
+    // So, this can be rewritten as:
+    //
+    //    msize = Summation(j=[(strLen-ub+1)...(strLen-lb+1)], j)
+    //
+    // i.e. sum of the arithmetic sequence [(strLen-ub+1) ... (strLen-lb+1)],
+    // which can be simply calculated using the formula sum = (a1 + a2) * n/2
+    dassert(lb > 0);
+    dassert(ub >= lb);
+    dassert(strLen >= lb);
+
+    // # of substrings of length ub from a string of length strLen
+    int32_t largestSubstrCount = strLen - ub + 1;
+    // # of substrings of length lb from a string of length strLen
+    int32_t smallestSubstrCount = strLen - lb + 1;
+
+    // Do the arithmetic as uint64_t to avoid overflows.
+    // (a1 + a2) * n will not exceed UINT64_MAX even if all variables are INT32_MAX.
+    uint64_t a1 = static_cast<uint64_t>(largestSubstrCount);
+    uint64_t a2 = static_cast<uint64_t>(smallestSubstrCount);
+    uint64_t n = smallestSubstrCount - largestSubstrCount + 1;
+    uint64_t sum = (a1 + a2) * n / 2;  // always evenly divisible
+    uassert(10384601,
+            fmt::format(
+                "Calculated tag count {} is too large for substring indexed encrypted field", sum),
+            sum <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()));
+    return static_cast<uint32_t>(sum);
+}
+}  // namespace
+
+uint32_t msizeForSubstring(int32_t strLen, int32_t lb, int32_t ub, int32_t mlen) {
+    dassert(lb > 0);
+    dassert(ub >= lb);
+    dassert(mlen >= ub);
+
+    auto padLen = calculatePaddedLengthForString(strLen);
+    if (lb > padLen) {
+        return 0;
+    }
+
+    padLen = std::min(mlen, padLen);  // cap padLen to mlen
+    ub = std::min(padLen, ub);        // cap ub to padLen (i.e. if padLen < ub)
+    return calculateMsize(padLen, lb, ub);
+}
+
+uint32_t msizeForSuffixOrPrefix(int32_t strLen, int32_t lb, int32_t ub) {
+    dassert(lb > 0);
+    dassert(ub >= lb);
+
+    auto padLen = calculatePaddedLengthForString(strLen);
+    if (lb > padLen) {
+        return 0;
+    }
+    return static_cast<uint32_t>(std::min(padLen, ub) - lb + 1);
+}
+
+uint32_t maxTagsForSubstring(int32_t lb, int32_t ub, int32_t mlen) {
+    dassert(mlen >= ub);
+    // Worst case tag count for substring is calculated in OST as:
+    //     max = Summation(j=[lb...ub], (mlen-j+1))
+    return calculateMsize(mlen, lb, ub);
+}
+
+uint32_t maxTagsForSuffixOrPrefix(int32_t lb, int32_t ub) {
+    dassert(lb > 0);
+    dassert(ub >= lb);
+    return static_cast<uint32_t>(ub - lb + 1);
 }
 
 PrfBlock FLEUtil::blockToArray(const SHA256Block& block) {

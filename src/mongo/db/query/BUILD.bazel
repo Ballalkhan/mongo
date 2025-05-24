@@ -49,6 +49,19 @@ mongo_cc_library(
 )
 
 mongo_cc_library(
+    name = "query_fcv_environment_for_test",
+    srcs = [
+        "query_fcv_environment_for_test.cpp",
+    ],
+    hdrs = [
+        "query_fcv_environment_for_test.h",
+    ],
+    deps = [
+        "//src/mongo/db:server_base",
+    ],
+)
+
+mongo_cc_library(
     name = "random_utils",
     srcs = [
         "random_utils.cpp",
@@ -307,6 +320,23 @@ mongo_cc_library(
 )
 
 mongo_cc_library(
+    name = "plan_yield_policy_release_memory",
+    srcs = [
+        "plan_yield_policy_release_memory.cpp",
+    ],
+    hdrs = [
+        "plan_yield_policy_release_memory.h",
+    ],
+    deps = [
+        "//src/mongo:base",
+        "//src/mongo/db:service_context",
+        "//src/mongo/db/query:plan_executor",
+        "//src/mongo/db/query:plan_yield_policy",
+        "//src/mongo/util:clock_sources",
+    ],
+)
+
+mongo_cc_library(
     name = "plan_executor",
     srcs = [
         "plan_executor.cpp",
@@ -314,6 +344,7 @@ mongo_cc_library(
         "yield_policy_callbacks_impl.cpp",
     ],
     hdrs = [
+        "oplog_wait_config.h",
         "plan_executor.h",
         "plan_yield_policy_remote_cursor.h",
         "yield_policy_callbacks_impl.h",
@@ -809,6 +840,7 @@ mongo_cc_unit_test(
     deps = [
         ":parsed_distinct_command",
         ":query_planner_test_fixture",
+        "//src/mongo/db:service_context_d",
         "//src/mongo/db/catalog:collection_mock",
         "//src/mongo/db/query:index_bounds_builder_test_fixture",
         "//src/mongo/idl:server_parameter_test_util",
@@ -822,8 +854,6 @@ mongo_cc_unit_test(
         "canonical_query_encoder_test.cpp",
         "canonical_query_test.cpp",
         "count_command_test.cpp",
-        "field_effects_test.cpp",
-        "field_set_test.cpp",
         "find_common_test.cpp",
         "getmore_request_test.cpp",
         "hint_parser_test.cpp",
@@ -859,6 +889,7 @@ mongo_cc_unit_test(
         "query_request_test.cpp",
         "query_settings_test.cpp",
         "query_solution_test.cpp",
+        "query_utils_test.cpp",
         "record_id_range_test.cpp",
         "sort_pattern_test.cpp",
         "view_response_formatter_test.cpp",
@@ -897,6 +928,7 @@ mongo_cc_benchmark(
     ],
     tags = ["query_bm"],
     deps = [
+        "//src/mongo/db/query:query_fcv_environment_for_test",
         "//src/mongo/db/query:query_test_service_context",
     ],
 )

@@ -147,7 +147,6 @@ mongo_cc_library(
         "//src/mongo/db:catalog_raii.h",
         "//src/mongo/db:db_raii.h",
         "//src/mongo/db:read_concern.h",
-        "//src/mongo/db/catalog:local_oplog_info.h",
         "//src/mongo/db/exec:exclusion_projection_executor.h",
         "//src/mongo/db/exec:fastpath_projection_node.h",
         "//src/mongo/db/exec:projection_executor.h",
@@ -184,6 +183,7 @@ mongo_cc_library(
         "//src/mongo:base",
         "//src/mongo/db:namespace_spec",
         "//src/mongo/db/auth:security_token_auth",
+        "//src/mongo/db/catalog:local_oplog_info",
         "//src/mongo/db/exec/document_value",  # TODO(SERVER-93876): Remove.
         "//src/mongo/db/query/query_shape",  # TODO(SERVER-93876): Remove.
         "//src/mongo/db/query/query_stats:query_stats_parse",
@@ -365,6 +365,7 @@ mongo_cc_library(
         "//src/mongo/db/pipeline/window_function:window_function_count.cpp",
         "//src/mongo/db/pipeline/window_function:window_function_covariance.cpp",
         "//src/mongo/db/pipeline/window_function:window_function_expression.cpp",
+        "//src/mongo/db/pipeline/window_function:window_function_expression_gen",
         "//src/mongo/db/pipeline/window_function:window_function_integral.cpp",
         "//src/mongo/db/pipeline/window_function:window_function_min_max_scaler_util.cpp",
         "//src/mongo/db/pipeline/window_function:window_function_percentile.cpp",
@@ -433,8 +434,11 @@ mongo_cc_library(
     srcs = [
         "//src/mongo/db/query/query_shape:agg_cmd_shape.cpp",
         "//src/mongo/db/query/query_stats:agg_key.cpp",
-        "accumulator_internal_construct_stats.cpp",
+        "//src/mongo/db/exec/agg:document_source_to_stage_registry.cpp",
         "//src/mongo/db/exec/agg:stage.cpp",
+        "//src/mongo/db/exec/agg:exec_pipeline.cpp",
+        "//src/mongo/db/exec/agg:pipeline_builder.cpp",
+        "accumulator_internal_construct_stats.cpp",
         "document_source.cpp",
         "document_source_add_fields.cpp",
         "document_source_list_cluster_catalog.cpp",
@@ -477,7 +481,6 @@ mongo_cc_library(
         "document_source_lookup.cpp",
         "document_source_match.cpp",
         "document_source_merge.cpp",
-        "document_source_operation_metrics.cpp",
         "document_source_out.cpp",
         "document_source_plan_cache_stats.cpp",
         "document_source_project.cpp",
@@ -542,6 +545,9 @@ mongo_cc_library(
     hdrs = [
         "//src/mongo/db/query/query_shape:agg_cmd_shape.h",
         "//src/mongo/db/query/query_stats:agg_key.h",
+        "//src/mongo/db/exec/agg:document_source_to_stage_registry.h",
+        "//src/mongo/db/exec/agg:exec_pipeline.h",
+        "//src/mongo/db/exec/agg:pipeline_builder.h",
         "//src/mongo/db/exec/agg:stage.h",
         "document_source.h",
         "document_source_mock.h",
@@ -587,7 +593,6 @@ mongo_cc_library(
         "document_source_lookup.h",
         "document_source_match.h",
         "document_source_merge.h",
-        "document_source_operation_metrics.h",
         "document_source_out.h",
         "document_source_plan_cache_stats.h",
         "document_source_project.h",
@@ -727,7 +732,6 @@ mongo_cc_library(
         "//src/mongo/db/session:sessions_collection",
         "//src/mongo/db/sorter:sorter_base",
         "//src/mongo/db/sorter:sorter_stats",
-        "//src/mongo/db/stats:resource_consumption_metrics",
         "//src/mongo/db/storage:encryption_hooks",
         "//src/mongo/db/storage:index_entry_comparison",
         "//src/mongo/db/storage:storage_options",
@@ -1127,6 +1131,7 @@ mongo_cc_library(
         "document_source_change_stream_check_topology_change.cpp",
         "document_source_change_stream_ensure_resume_token_present.cpp",
         "document_source_change_stream_handle_topology_change.cpp",
+        "document_source_change_stream_inject_control_events.cpp",
         "document_source_change_stream_oplog_match.cpp",
         "document_source_change_stream_split_large_event.cpp",
         "document_source_change_stream_transform.cpp",
@@ -1148,6 +1153,7 @@ mongo_cc_library(
         "document_source_change_stream_check_topology_change.h",
         "document_source_change_stream_ensure_resume_token_present.h",
         "document_source_change_stream_handle_topology_change.h",
+        "document_source_change_stream_inject_control_events.h",
         "document_source_change_stream_oplog_match.h",
         "document_source_change_stream_split_large_event.h",
         "document_source_change_stream_transform.h",
@@ -1407,6 +1413,7 @@ mongo_cc_unit_test(
         ],
     }) + [
         "//src/mongo/db/catalog:collection_mock.h",
+        "//src/mongo/db/exec/agg:document_source_to_stage_registry_test.cpp",
         "//src/mongo/db/pipeline/document_source_internal_unpack_bucket_test:create_predicates_on_bucket_level_field_test.cpp",
         "//src/mongo/db/pipeline/document_source_internal_unpack_bucket_test:extract_or_build_project_to_internalize_test.cpp",
         "//src/mongo/db/pipeline/document_source_internal_unpack_bucket_test:extract_project_for_pushdown_test.cpp",
@@ -1498,6 +1505,7 @@ mongo_cc_unit_test(
         "//src/mongo/db/pipeline/process_interface:mongod_process_interfaces",
         "//src/mongo/db/pipeline/process_interface:mongos_process_interface",
         "//src/mongo/db/pipeline/process_interface:shardsvr_process_interface",
+        "//src/mongo/db/pipeline/spilling:spilling_test_utils",
         "//src/mongo/db/query:query_test_service_context",
         "//src/mongo/db/query/collation:collator_interface_mock",
         "//src/mongo/db/query/search:mongot_cursor",
@@ -1570,6 +1578,7 @@ mongo_cc_benchmark(
     deps = [
         ":accumulator",
         ":expression_context_for_test",
+        "//src/mongo/db/query:query_fcv_environment_for_test",
     ],
 )
 
@@ -1584,6 +1593,7 @@ mongo_cc_benchmark(
         ":accumulator",
         ":expression_context_for_test",
         "//src/mongo/db:service_context_non_d",
+        "//src/mongo/db/query:query_fcv_environment_for_test",
         "//src/mongo/db/query:query_test_service_context",
     ],
 )
@@ -1599,6 +1609,18 @@ mongo_cc_benchmark(
         ":accumulator",
         ":expression_context_for_test",
         "//src/mongo/db:service_context_non_d",
+        "//src/mongo/db/query:query_fcv_environment_for_test",
         "//src/mongo/db/query:query_test_service_context",
+    ],
+)
+
+mongo_cc_benchmark(
+    name = "window_function_add_to_set_bm",
+    srcs = [
+        "//src/mongo/db/pipeline/window_function:window_function_add_to_set_bm.cpp",
+    ],
+    tags = ["query_bm"],
+    deps = [
+        ":expression_context_for_test",
     ],
 )

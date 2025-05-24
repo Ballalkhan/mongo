@@ -74,6 +74,7 @@
 #include "mongo/db/s/metadata_consistency_util.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/shard_id.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -89,7 +90,6 @@
 #include "mongo/s/query/exec/establish_cursors.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 #include "mongo/s/sharding_feature_flags_gen.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/duration.h"
@@ -228,12 +228,18 @@ public:
                                                       Callback&& cb) {
             const auto now = opCtx->getServiceContext()->getFastClockSource()->now();
             const auto deadline = now + timeout;
-            const auto guard = opCtx->makeDeadlineGuard(deadline, ErrorCodes::ExceededTimeLimit);
+            const auto guard = opCtx->makeDeadlineGuard(deadline, ErrorCodes::MaxTimeMSExpired);
             try {
                 return std::forward<Callback>(cb)();
-            } catch (const ExceptionFor<ErrorCodes::ExceededTimeLimit>&) {
+            } catch (const ExceptionFor<ErrorCategory::ExceededTimeLimitError>&) {
+                // TODO (SERVER-104462): remove the comment below, and restore the catch statement
+                // above to use ExceptionFor.
+                // Need to catch the entire category of errors because there are parts across the
+                // code base where we throw a specific error, ignoring the one set on the opCtx.
                 const auto now = opCtx->getServiceContext()->getFastClockSource()->now();
                 if (now >= deadline) {
+                    // Convert the error code to a specific one, indicating that the
+                    // specific deadline related to DbMetadataLockMaxTimeMS has been exceeded
                     uasserted(9944001,
                               str::stream()
                                   << "Exceeded maximum time " << timeout

@@ -67,6 +67,7 @@
 #include "mongo/db/session/logical_session_id.h"
 #include "mongo/db/shard_role.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/logv2/log_component.h"
 #include "mongo/util/assert_util.h"
@@ -251,7 +252,7 @@ public:
         _isDisposed = true;
     }
 
-    void forceSpill() override {
+    void forceSpill(PlanYieldPolicy* yieldPolicy) override {
         LOGV2_ERROR(9819200, "An attempt was made to force PlanExecutorExpress to spill.");
     }
 
@@ -286,12 +287,6 @@ public:
 
     const PlanExplainer& getPlanExplainer() const override {
         return _planExplainer;
-    }
-
-    void enableSaveRecoveryUnitAcrossCommandsIfSupported() override {}
-
-    bool isSaveRecoveryUnitAcrossCommandsEnabled() const override {
-        return false;
     }
 
     boost::optional<StringData> getExecutorType() const override {

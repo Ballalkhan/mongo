@@ -46,6 +46,26 @@ namespace {
  */
 class DocumentSourceScoreFusionTest : service_context_test::WithSetupTransportLayer,
                                       public AggregationContextFixture {
+public:
+    DocumentSourceScoreFusionTest() {
+        // TODO SERVER-82020: Delete this once the feature flag defaults to true.
+        // $minMaxScaler is gated behind a feature flag and does
+        // not get put into the map as the flag is off by default. Changing the value of the feature
+        // flag with RAIIServerParameterControllerForTest() does not solve the issue because the
+        // registration logic is not re-hit.
+        try {
+            window_function::Expression::registerParser(
+                "$minMaxScaler",
+                window_function::ExpressionMinMaxScaler::parse,
+                nullptr,
+                AllowedWithApiStrict::kNeverInVersion1);
+        } catch (const DBException& e) {
+            // Allow this exception, to allow multiple instances
+            // to be created in this process.
+            ASSERT(e.reason() == "Duplicate parsers ($minMaxScaler) registered.");
+        }
+    }
+
 private:
     RAIIServerParameterControllerForTest scoreFusionFlag{"featureFlagSearchHybridScoringFull",
                                                          true};
@@ -238,7 +258,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckOnePipelineAllowedNormalizationNone) 
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score"
                             ]
                         }
@@ -373,8 +393,392 @@ TEST_F(DocumentSourceScoreFusionTest, CheckOnePipelineAllowedNormalizationSigmoi
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckOnePipelineAllowedNormalizationMinMaxScaler) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    name1: [
+                        {
+                            $vectorSearch: {
+                                queryVector: [1.0, 2.0, 3.0],
+                                path: "plot_embedding",
+                                numCandidates: 300,
+                                index: "vector_index",
+                                limit: 10
+                            }
+                        }
+                    ]
+                },
+                normalization: "minMaxScaler"
+            }
+        }
+    })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$vectorSearch": {
+                        "queryVector": [
+                            1,
+                            2,
+                            3
+                        ],
+                        "path": "plot_embedding",
+                        "numCandidates": 300,
+                        "index": "vector_index",
+                        "limit": 10
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 1
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$_internalSetWindowFields": {
+                        "sortBy": {
+                            "name1_score": -1
+                        },
+                        "output": {
+                            "name1_score": {
+                                "$minMaxScaler": {
+                                    "input": "$name1_score",
+                                    "min": 0,
+                                    "max": 1
+                                },
+                                "window": {
+                                    "documents": [
+                                        "unbounded",
+                                        "unbounded"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "name1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$name1_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedNormalizationMinMaxScaler) {
+    auto fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    name1: [
+                        {$score: {score: "$score_50"}}
+                    ],
+                    name2: [
+                        {$score: {score: "$score_10"}}
+                    ]
+                },
+                normalization: "minMaxScaler"
+            }
+        }
+    })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$setMetadata": {
+                        "score": "$score_50"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$divide": [
+                                {
+                                    "$const": 1
+                                },
+                                {
+                                    "$add": [
+                                        {
+                                            "$const": 1
+                                        },
+                                        {
+                                            "$exp": [
+                                                {
+                                                    "$multiply": [
+                                                        {
+                                                            "$const": -1
+                                                        },
+                                                        {
+                                                            "$meta": "score"
+                                                        }
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 1
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$_internalSetWindowFields": {
+                        "sortBy": {
+                            "name1_score": -1
+                        },
+                        "output": {
+                            "name1_score": {
+                                "$minMaxScaler": {
+                                    "input": "$name1_score",
+                                    "min": 0,
+                                    "max": 1
+                                },
+                                "window": {
+                                    "documents": [
+                                        "unbounded",
+                                        "unbounded"
+                                    ]
+                                }
+                            }
+                        }
+                    } 
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$setMetadata": {
+                                    "score": "$score_10"
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$divide": [
+                                            {
+                                                "$const": 1
+                                            },
+                                            {
+                                                "$add": [
+                                                    {
+                                                        "$const": 1
+                                                    },
+                                                    {
+                                                        "$exp": [
+                                                            {
+                                                                "$multiply": [
+                                                                    {
+                                                                        "$const": -1
+                                                                    },
+                                                                    {
+                                                                        "$meta": "score"
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "name2_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$_internalSetWindowFields": {
+                                    "sortBy": {
+                                        "name2_score": -1
+                                    },
+                                    "output": {
+                                        "name2_score": {
+                                            "$minMaxScaler": {
+                                                "input": "$name2_score",
+                                                "min": 0,
+                                                "max": 1
+                                            },
+                                            "window": {
+                                                "documents": [
+                                                    "unbounded",
+                                                    "unbounded"
+                                                ]
+                                            }
+                                        }
+                                    }
+                                } 
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "name1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name2_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name2_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$name1_score",
+                                "$name2_score"
                             ]
                         }
                     }
@@ -527,6 +931,62 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorsIfEmptyPipeline) {
                        9402503);
 }
 
+TEST_F(DocumentSourceScoreFusionTest, CheckSinglePipelineTextMatchAllowed) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    pipeOne: [
+                        {
+                            $match: {
+                                $text: {
+                                    $search: "coffee"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            }
+        }    
+    })");
+
+    ASSERT_DOES_NOT_THROW(
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()));
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelineTextMatchAllowed) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    pipeOne: [
+                        { $match : { author : "Agatha Christie" } },
+                        { $score: { score: "$age" } }
+                    ],
+                    pipeTwo: [
+                        {
+                            $match: {
+                                $text: {
+                                    $search: "coffee"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            }
+        }    
+    })");
+
+    ASSERT_DOES_NOT_THROW(
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()));
+}
+
 TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowed) {
     NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
     getExpCtx()->setResolvedNamespaces(
@@ -571,12 +1031,13 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowed) {
         R"({
             "expectedStages": [
                 {
-                    "$search": {
-                        "index": "search_index",
-                        "text": {
-                            "query": "mystery",
-                            "path": "genres"
-                        }
+                    "$search": { 
+                        "mongotQuery": { 
+                            "index": "search_index", 
+                            "text": { "query": "mystery", "path": "genres" } 
+                        }, 
+                        "requiresSearchSequenceToken": false, 
+                        "requiresSearchMetaCursor": true 
                     }
                 },
                 {
@@ -669,7 +1130,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowed) {
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score",
                                 "$name2_score"
                             ]
@@ -722,6 +1183,11 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedSigmoid) {
             "expectedStages": [
                 {
                     "$setMetadata": {
+                        "score": "$score_50"
+                    }
+                },
+                {
+                    "$setMetadata": {
                         "score": {
                             "$divide": [
                                 {
@@ -739,7 +1205,9 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedSigmoid) {
                                                         {
                                                             "$const": -1
                                                         },
-                                                        "$score_50"
+                                                        {
+                                                            "$meta": "score"
+                                                        }
                                                     ]
                                                 }
                                             ]
@@ -802,6 +1270,11 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedSigmoid) {
                         "pipeline": [
                             {
                                 "$setMetadata": {
+                                    "score": "$score_10"
+                                }
+                            },
+                            {
+                                "$setMetadata": {
                                     "score": {
                                         "$divide": [
                                             {
@@ -819,7 +1292,9 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedSigmoid) {
                                                                     {
                                                                         "$const": -1
                                                                     },
-                                                                    "$score_10"
+                                                                    {
+                                                                        "$meta": "score"
+                                                                    }
                                                                 ]
                                                             }
                                                         ]
@@ -911,7 +1386,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedSigmoid) {
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score",
                                 "$name2_score"
                             ]
@@ -968,12 +1443,13 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultipleStagesInPipelineAllowed) {
         R"({
             "expectedStages": [
                 {
-                    $search: {
-                        index: "search_index",
-                        text: {
-                            query: "mystery",
-                            path: "genres"
-                        }
+                    "$search": { 
+                        "mongotQuery": { 
+                            "index": "search_index", 
+                            "text": { "query": "mystery", "path": "genres" } 
+                        }, 
+                        "requiresSearchSequenceToken": false, 
+                        "requiresSearchMetaCursor": true 
                     }
                 },
                 {
@@ -1024,7 +1500,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultipleStagesInPipelineAllowed) {
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score"
                             ]
                         }
@@ -1098,25 +1574,32 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAndOptionalArguments
                     }
                 },
                 {
-                    $setMetadata: {
-                        score: {
-                            $divide: [
+                    "$setMetadata": {
+                        "score": { "$divide": [ { "$const": 6.0 }, { "$const": 3.0 } ] }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$divide": [
                                 {
-                                    $const: 1
+                                    "$const": 1
                                 },
                                 {
-                                    $add: [
+                                    "$add": [
                                         {
-                                            $const: 1
+                                            "$const": 1
                                         },
                                         {
-                                            $exp: [
+                                            "$exp": [
                                                 {
-                                                    $multiply: [
+                                                    "$multiply": [
                                                         {
-                                                            $const: -1
+                                                            "$const": -1
                                                         },
-                                                        { $divide: [ { $const: 6.0 }, { $const: 3.0 } ] }
+                                                        {
+                                                            "$meta": "score"
+                                                        }
                                                     ]
                                                 }
                                             ]
@@ -1153,12 +1636,13 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAndOptionalArguments
                         "coll": "pipeline_test",
                         "pipeline": [
                             {
-                                $search: {
-                                    index: "search_index",
-                                    text: {
-                                        query: "mystery",
-                                        path: "genres"
-                                    }
+                                "$search": { 
+                                    "mongotQuery": { 
+                                        "index": "search_index", 
+                                        "text": { "query": "mystery", "path": "genres" } 
+                                    }, 
+                                    "requiresSearchSequenceToken": false, 
+                                    "requiresSearchMetaCursor": true 
                                 }
                             },
                             {
@@ -1264,7 +1748,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAndOptionalArguments
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score",
                                 "$name2_score",
                                 "$name3_score"
@@ -1395,7 +1879,7 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorsIfWeightsIsNotObject) {
             },
             combination:  {
                 weights: "my bad",
-                method: "sum"
+                method: "avg"
             }
         }
     })");
@@ -1405,7 +1889,7 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorsIfWeightsIsNotObject) {
                        ErrorCodes::TypeMismatch);
 }
 
-TEST_F(DocumentSourceScoreFusionTest, ErrorsIfEmptyWeights) {
+TEST_F(DocumentSourceScoreFusionTest, DoesNotErrorIfEmptyWeights) {
     auto spec = fromjson(R"({
         $scoreFusion: {
             input: {
@@ -1427,14 +1911,933 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorsIfEmptyWeights) {
             },
             combination: {
                 weights: {},
-                method: "sum"
+                method: "avg"
+            }
+        }
+    })");
+
+    ASSERT_DOES_NOT_THROW(
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()));
+}
+
+TEST_F(DocumentSourceScoreFusionTest, DoesNotErrorIfOnlySomeWeights) {
+    auto expCtx = getExpCtx();
+    expCtx->setResolvedNamespaces(ResolvedNamespaceMap{
+        {expCtx->getNamespaceString(), {expCtx->getNamespaceString(), std::vector<BSONObj>()}}});
+
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchAuthor: 3
+                },
+                method: "avg"
+            }
+        }
+    })");
+
+    ASSERT_DOES_NOT_THROW(
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()));
+}
+
+TEST_F(DocumentSourceScoreFusionTest, ErrorsIfMisnamedWeight) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchAuthor: 3,
+                    matchGenre: 2
+                }
             }
         }
     })");
 
     ASSERT_THROWS_CODE(DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()),
                        AssertionException,
-                       9402202);
+                       9967500);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, ErrorsIfExtraWeight) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchAuthor: 3,
+                    matchGenre: 2,
+                    matchGenres: 1
+                }
+            }
+        }
+    })");
+
+    ASSERT_THROWS_CODE(DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()),
+                       AssertionException,
+                       9460301);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, ErrorsIfNonNumericWeight) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                       {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchAuthor: 3,
+                    matchGenres: "0"
+                }
+            }
+        }
+    })");
+
+    ASSERT_THROWS_CODE(DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()),
+                       AssertionException,
+                       13118);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, ErrorsIfNegativeWeightValue) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchAuthor: -1,
+                    matchGenres: 0
+                }
+            }
+        }
+    })");
+
+    ASSERT_THROWS_CODE(DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx()),
+                       AssertionException,
+                       9460300);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckWeightsApplied) {
+    auto expCtx = getExpCtx();
+    expCtx->setResolvedNamespaces(ResolvedNamespaceMap{
+        {expCtx->getNamespaceString(), {expCtx->getNamespaceString(), std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchAuthor: 5,
+                    matchGenres: 3
+                }
+            }
+        }
+    })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$search": {
+                        "mongotQuery": {
+                            "index": "search_index",
+                            "text": {
+                                "query": "mystery",
+                                "path": "genres"
+                            }
+                        },
+                        "requiresSearchSequenceToken": false,
+                        "requiresSearchMetaCursor": true
+                    }
+                },
+                {
+                    "$match": {
+                        "author": "dave"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "matchAuthor_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 5
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$search": {
+                                    "mongotQuery": {
+                                        "index": "search_index",
+                                        "text": {
+                                            "query": "mystery",
+                                            "path": "genres"
+                                        }
+                                    },
+                                    "requiresSearchSequenceToken": false,
+                                    "requiresSearchMetaCursor": true
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "matchGenres_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 3
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "matchAuthor_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchAuthor_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "matchGenres_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchGenres_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$matchAuthor_score",
+                                "$matchGenres_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+// Same as CheckWeightsApplied but the ordering of fields doesn't match between input.pipelines and
+// combination.weights; checks that the weights are applied to the pipeline with the same name.
+TEST_F(DocumentSourceScoreFusionTest, CheckWeightsAppliedToCorrectPipeline) {
+    auto expCtx = getExpCtx();
+    expCtx->setResolvedNamespaces(ResolvedNamespaceMap{
+        {expCtx->getNamespaceString(), {expCtx->getNamespaceString(), std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchGenres: 3,
+                    matchAuthor: 5
+                }
+            }
+        }
+    })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$search": {
+                        "mongotQuery": {
+                            "index": "search_index",
+                            "text": {
+                                "query": "mystery",
+                                "path": "genres"
+                            }
+                        },
+                        "requiresSearchSequenceToken": false,
+                        "requiresSearchMetaCursor": true
+                    }
+                },
+                {
+                    "$match": {
+                        "author": "dave"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "matchAuthor_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 5
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$search": {
+                                    "mongotQuery": {
+                                        "index": "search_index",
+                                        "text": {
+                                            "query": "mystery",
+                                            "path": "genres"
+                                        }
+                                    },
+                                    "requiresSearchSequenceToken": false,
+                                    "requiresSearchMetaCursor": true
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "matchGenres_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 3
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "matchAuthor_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchAuthor_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "matchGenres_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchGenres_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$matchAuthor_score",
+                                "$matchGenres_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckWeightsAppliedMultiplePipelines) {
+    auto expCtx = getExpCtx();
+    expCtx->setResolvedNamespaces(ResolvedNamespaceMap{
+        {expCtx->getNamespaceString(), {expCtx->getNamespaceString(), std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    matchAuthor: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        },
+                        { $match : { author : "dave" } }
+                    ],
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ],
+                    matchPlot: [
+                        {
+                            $vectorSearch: {
+                                queryVector: [1.0, 2.0, 3.0],
+                                path: "plot_embedding",
+                                numCandidates: 300,
+                                index: "vector_index",
+                                limit: 10
+                            }
+                        }
+                    ],
+                    matchDistance: [
+                        {$geoNear: {near: [20, 40]}},
+                        {$score: {score: {$meta: "geoNearDistance"}, normalizeFunction: "none"}}
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    matchGenres: 3,
+                    matchDistance: 0,
+                    matchAuthor: 5,
+                    matchPlot: 0.3
+                }
+            }
+        }
+    })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$search": {
+                        "mongotQuery": {
+                            "index": "search_index",
+                            "text": {
+                                "query": "mystery",
+                                "path": "genres"
+                            }
+                        },
+                        "requiresSearchSequenceToken": false,
+                        "requiresSearchMetaCursor": true
+                    }
+                },
+                {
+                    "$match": {
+                        "author": "dave"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "matchAuthor_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 5
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$geoNear": {
+                                    "near": [
+                                        {
+                                            "$const": 20
+                                        },
+                                        {
+                                            "$const": 40
+                                        }
+                                    ],
+                                    "spherical": false
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$meta": "geoNearDistance"
+                                    }
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "matchDistance_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 0
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$search": {
+                                    "mongotQuery": {
+                                        "index": "search_index",
+                                        "text": {
+                                            "query": "mystery",
+                                            "path": "genres"
+                                        }
+                                    },
+                                    "requiresSearchSequenceToken": false,
+                                    "requiresSearchMetaCursor": true
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "matchGenres_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 3
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$vectorSearch": {
+                                    "queryVector": [
+                                        1,
+                                        2,
+                                        3
+                                    ],
+                                    "path": "plot_embedding",
+                                    "numCandidates": 300,
+                                    "index": "vector_index",
+                                    "limit": 10
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "matchPlot_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 0.3
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "matchAuthor_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchAuthor_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "matchDistance_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchDistance_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "matchGenres_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchGenres_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "matchPlot_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchPlot_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$matchAuthor_score",
+                                "$matchDistance_score",
+                                "$matchGenres_score",
+                                "$matchPlot_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
 }
 
 TEST_F(DocumentSourceScoreFusionTest, CheckIfWeightsArrayMixedIntsDecimals) {
@@ -1476,7 +2879,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfWeightsArrayMixedIntsDecimals) {
                     name1: 5,
                     name2: 3.2
                 },
-                method: "sum"
+                method: "avg"
             }
         }
     })");
@@ -1489,12 +2892,13 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfWeightsArrayMixedIntsDecimals) {
         R"({
             "expectedStages": [
                 {
-                    "$search": {
-                        "index": "search_index",
-                        "text": {
-                            "query": "mystery",
-                            "path": "genres"
-                        }
+                    "$search": { 
+                        "mongotQuery": { 
+                            "index": "search_index", 
+                            "text": { "query": "mystery", "path": "genres" } 
+                        }, 
+                        "requiresSearchSequenceToken": false, 
+                        "requiresSearchMetaCursor": true 
                     }
                 },
                 {
@@ -1592,7 +2996,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfWeightsArrayMixedIntsDecimals) {
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score",
                                 "$name2_score"
                             ]
@@ -1641,7 +3045,7 @@ TEST_F(DocumentSourceScoreFusionTest, ScoreNullsIsRejected) {
                 weights: {
                     name1: 5
                 },
-                method: "sum"
+                method: "avg"
             },
             scoreNulls: 0
         }
@@ -1676,7 +3080,7 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorIfOptionalFieldsIncludedMoreThanOnce)
                 weights: {
                     name1: 5
                 },
-                method: "sum",
+                method: "avg",
                 method: "duplicate"
             }
         }
@@ -1841,26 +3245,31 @@ TEST_F(DocumentSourceScoreFusionTest, CheckLimitSampleUnionwithAllowed) {
                     }
                 },
                 {
-                    $setMetadata: {
-                        score: {
-                            $divide: [
+                    "$setMetadata": {
+                        "score": { "$const": 5.0 }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$divide": [
                                 {
-                                    $const: 1
+                                    "$const": 1
                                 },
                                 {
-                                    $add: [
+                                    "$add": [
                                         {
-                                            $const: 1
+                                            "$const": 1
                                         },
                                         {
-                                            $exp: [
+                                            "$exp": [
                                                 {
-                                                    $multiply: [
+                                                    "$multiply": [
                                                         {
-                                                            $const: -1
+                                                            "$const": -1
                                                         },
                                                         {
-                                                            $const: 5.0
+                                                            "$meta": "score"
                                                         }
                                                     ]
                                                 }
@@ -1917,26 +3326,31 @@ TEST_F(DocumentSourceScoreFusionTest, CheckLimitSampleUnionwithAllowed) {
                                 }
                             },
                             {
-                                $setMetadata: {
-                                    score: {
-                                        $divide: [
+                                "$setMetadata": {
+                                    "score": { "$const": 5.0 }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$divide": [
                                             {
-                                                $const: 1
+                                                "$const": 1
                                             },
                                             {
-                                                $add: [
+                                                "$add": [
                                                     {
-                                                        $const: 1
+                                                        "$const": 1
                                                     },
                                                     {
-                                                        $exp: [
+                                                        "$exp": [
                                                             {
-                                                                $multiply: [
+                                                                "$multiply": [
                                                                     {
-                                                                        $const: -1
+                                                                        "$const": -1
                                                                     },
                                                                     {
-                                                                        $const: 5.0
+                                                                        "$meta": "score"
                                                                     }
                                                                 ]
                                                             }
@@ -2004,7 +3418,7 @@ TEST_F(DocumentSourceScoreFusionTest, CheckLimitSampleUnionwithAllowed) {
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
+                            "$avg": [
                                 "$name1_score",
                                 "$name2_score"
                             ]
@@ -2238,12 +3652,33 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorsIfGeoNearPipeline) {
 }
 
 TEST_F(DocumentSourceScoreFusionTest, CheckIfScoreWithGeoNearDistanceMetadataPipeline) {
+    auto fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
     auto spec = fromjson(R"({
         $scoreFusion: {
             input: {
                 pipelines: {
-                    name1: [
-                        { $match : { author : "Agatha Christie" } },
+                    matchGenres: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ],
+                    matchDistance: [
+                        {
+                            $geoNear: {
+                                near: { type: "Point", coordinates: [ -73.99279 , 40.719296 ] },
+                                maxDistance: 2,
+                                query: { category: "Parks" },
+                                spherical: true
+                            }
+                        },
                         { $score: { score: { $meta: "geoNearDistance" } } }
                     ]
                 },
@@ -2261,31 +3696,55 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfScoreWithGeoNearDistanceMetadataPip
         R"({
             "expectedStages": [
                 {
-                    $match: {
-                        author: "Agatha Christie"
+                    "$geoNear": {
+                        "near": {
+                            "type": {
+                                "$const": "Point"
+                            },
+                            "coordinates": [
+                                {
+                                    "$const": -73.99279
+                                },
+                                {
+                                    "$const": 40.719296
+                                }
+                            ]
+                        },
+                        "maxDistance": 2,
+                        "query": {
+                            "category": {
+                                "$eq": "Parks"
+                            }
+                        },
+                        "spherical": true
                     }
                 },
                 {
-                    $setMetadata: {
-                        score: {
-                            $divide: [
+                    "$setMetadata": {
+                        "score": { "$meta": "geoNearDistance" }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$divide": [
                                 {
-                                    $const: 1
+                                    "$const": 1
                                 },
                                 {
-                                    $add: [
+                                    "$add": [
                                         {
-                                            $const: 1
+                                            "$const": 1
                                         },
                                         {
-                                            $exp: [
+                                            "$exp": [
                                                 {
-                                                    $multiply: [
+                                                    "$multiply": [
                                                         {
-                                                            $const: -1
+                                                            "$const": -1
                                                         },
                                                         {
-                                                            $meta: "geoNearDistance"
+                                                            "$meta": "score"
                                                         }
                                                     ]
                                                 }
@@ -2306,16 +3765,57 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfScoreWithGeoNearDistanceMetadataPip
                 },
                 {
                     "$addFields": {
-                        "name1_score": {
+                        "matchDistance_score": {
                             "$multiply": [
                                 {
-                                    $meta: "score"
+                                    "$meta": "score"
                                 },
                                 {
-                                    "$const": 1.0
+                                    "$const": 1
                                 }
                             ]
                         }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$search": {
+                                    "mongotQuery": {
+                                        "index": "search_index",
+                                        "text": {
+                                            "query": "mystery",
+                                            "path": "genres"
+                                        }
+                                    },
+                                    "requiresSearchSequenceToken": false,
+                                    "requiresSearchMetaCursor": true
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "matchGenres_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 },
                 {
@@ -2324,10 +3824,20 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfScoreWithGeoNearDistanceMetadataPip
                         "docs": {
                             "$first": "$docs"
                         },
-                        "name1_score": {
+                        "matchDistance_score": {
                             "$max": {
                                 "$ifNull": [
-                                    "$name1_score",
+                                    "$matchDistance_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "matchGenres_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$matchGenres_score",
                                     {
                                         "$const": 0
                                     }
@@ -2340,15 +3850,18 @@ TEST_F(DocumentSourceScoreFusionTest, CheckIfScoreWithGeoNearDistanceMetadataPip
                 {
                     "$setMetadata": {
                         "score": {
-                            "$add": [
-                                "$name1_score"
+                            "$avg": [
+                                "$matchDistance_score",
+                                "$matchGenres_score"
                             ]
                         }
                     }
                 },
                 {
                     "$sort": {
-                        "$computed0": {$meta: "score"},
+                        "$computed0": {
+                            "$meta": "score"
+                        },
                         "_id": 1
                     }
                 },
@@ -2394,9 +3907,8 @@ TEST_F(DocumentSourceScoreFusionTest, ErrorsIfInvalidCombinationMethodValue) {
                        ErrorCodes::BadValue);
 }
 
-// The 'sum' option for combination.method is tested in CheckIfWeightsArrayMixedIntsDecimals. The
-// remaining tests that specify "none" for combination.method desugar into the "sum" operation by
-// default.
+// The remaining tests that specify "none" for combination.method desugar into the "avg" operation
+// by default.
 TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedAvgMethod) {
     auto fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
     getExpCtx()->setResolvedNamespaces(
@@ -2444,12 +3956,13 @@ TEST_F(DocumentSourceScoreFusionTest, CheckMultiplePipelinesAllowedAvgMethod) {
         R"({
             "expectedStages": [
                 {
-                    "$search": {
-                        "index": "search_index",
-                        "text": {
-                            "query": "mystery",
-                            "path": "genres"
-                        }
+                    "$search": { 
+                        "mongotQuery": { 
+                            "index": "search_index", 
+                            "text": { "query": "mystery", "path": "genres" } 
+                        }, 
+                        "requiresSearchSequenceToken": false, 
+                        "requiresSearchMetaCursor": true 
                     }
                 },
                 {
@@ -2629,7 +4142,7 @@ TEST_F(DocumentSourceScoreFusionTest,
                 normalization: "none"
             },
             combination: {
-                method: "sum",
+                method: "avg",
                 expression: {$sum: ["$$name1", 5.0]}
             }
         }
@@ -2974,12 +4487,13 @@ TEST_F(DocumentSourceScoreFusionTest,
         R"({
             "expectedStages": [
                 {
-                    "$search": {
-                        "index": "search_index",
-                        "text": {
-                            "query": "mystery",
-                            "path": "genres"
-                        }
+                    "$search": { 
+                        "mongotQuery": { 
+                            "index": "search_index", 
+                            "text": { "query": "mystery", "path": "genres" } 
+                        }, 
+                        "requiresSearchSequenceToken": false, 
+                        "requiresSearchMetaCursor": true 
                     }
                 },
                 {
@@ -3163,12 +4677,13 @@ TEST_F(DocumentSourceScoreFusionTest,
         R"({
             "expectedStages": [
                 {
-                    "$search": {
-                        "index": "search_index",
-                        "text": {
-                            "query": "mystery",
-                            "path": "genres"
-                        }
+                    "$search": { 
+                        "mongotQuery": { 
+                            "index": "search_index", 
+                            "text": { "query": "mystery", "path": "genres" } 
+                        }, 
+                        "requiresSearchSequenceToken": false, 
+                        "requiresSearchMetaCursor": true 
                     }
                 },
                 {
@@ -3615,6 +5130,2221 @@ TEST_F(DocumentSourceScoreFusionTest, CheckOnePipelineAllowedNormalizationNoneMe
                 }
             ]
         })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckOnePipelineScoreDetailsDesugaring) {
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    name1: [
+                        {
+                            $vectorSearch: {
+                                queryVector: [1.0, 2.0, 3.0],
+                                path: "plot_embedding",
+                                numCandidates: 300,
+                                index: "vector_index",
+                                limit: 10
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    name1: 5
+                }
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$vectorSearch": {
+                        "queryVector": [
+                            1,
+                            2,
+                            3
+                        ],
+                        "path": "plot_embedding",
+                        "numCandidates": 300,
+                        "index": "vector_index",
+                        "limit": 10
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 5
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$name1_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "name1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name1_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name1_scoreDetails": {
+                            "$mergeObjects": "$name1_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$name1_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "name1"
+                                        },
+                                        "inputPipelineRawScore": "$name1_rawScore",
+                                        "weight": {
+                                            "$const": 5
+                                        }
+                                    },
+                                    "$name1_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "average"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckTwoPipelineSearchWithScoreDetailsDesugaring) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    name1: [
+                        {
+                            $vectorSearch: {
+                                queryVector: [1.0, 2.0, 3.0],
+                                path: "plot_embedding",
+                                numCandidates: 300,
+                                index: "vector_index",
+                                limit: 10
+                            }
+                        }
+                    ],
+                    searchPipe: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                },
+                                scoreDetails: true
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    name1: 3,
+                    searchPipe: 2
+                }
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$vectorSearch": {
+                        "queryVector": [
+                            1,
+                            2,
+                            3
+                        ],
+                        "path": "plot_embedding",
+                        "numCandidates": 300,
+                        "index": "vector_index",
+                        "limit": 10
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 3
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$name1_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$search": {
+                                    "mongotQuery": {
+                                        "index": "search_index",
+                                        "text": {
+                                            "query": "mystery",
+                                            "path": "genres"
+                                        },
+                                        "scoreDetails": true
+                                    },
+                                    "requiresSearchSequenceToken": false,
+                                    "requiresSearchMetaCursor": true
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "searchPipe_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 2
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "searchPipe_rawScore": {
+                                        "$meta": "score"
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": "$searchPipe_score"
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "searchPipe_scoreDetails": {
+                                        "$meta": "scoreDetails"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "name1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name1_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name1_scoreDetails": {
+                            "$mergeObjects": "$name1_scoreDetails"
+                        },
+                        "searchPipe_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$searchPipe_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "searchPipe_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$searchPipe_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "searchPipe_scoreDetails": {
+                            "$mergeObjects": "$searchPipe_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$name1_score",
+                                "$searchPipe_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "name1"
+                                        },
+                                        "inputPipelineRawScore": "$name1_rawScore",
+                                        "weight": {
+                                            "$const": 3
+                                        }
+                                    },
+                                    "$name1_scoreDetails"
+                                ]
+                            },
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "searchPipe"
+                                        },
+                                        "inputPipelineRawScore": "$searchPipe_rawScore",
+                                        "weight": {
+                                            "$const": 2
+                                        }
+                                    },
+                                    "$searchPipe_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "average"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckTwoPipelineSearchNoScoreDetailsDesugaring) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    search: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                }
+                            }
+                        }
+                    ],
+                    vector: [
+                        {
+                            $vectorSearch: {
+                                queryVector: [1.0, 2.0, 3.0],
+                                path: "plot_embedding",
+                                numCandidates: 300,
+                                index: "vector_index",
+                                limit: 10
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                weights: {
+                    vector: 1,
+                    search: 2
+                }
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$search": {
+                        "mongotQuery": {
+                            "index": "search_index",
+                            "text": {
+                                "query": "mystery",
+                                "path": "genres"
+                            }
+                        },
+                        "requiresSearchSequenceToken": false,
+                        "requiresSearchMetaCursor": true
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "search_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 2
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "search_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$search_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "search_scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$vectorSearch": {
+                                    "queryVector": [
+                                        1,
+                                        2,
+                                        3
+                                    ],
+                                    "path": "plot_embedding",
+                                    "numCandidates": 300,
+                                    "index": "vector_index",
+                                    "limit": 10
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "vector_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "vector_rawScore": {
+                                        "$meta": "score"
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": "$vector_score"
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "vector_scoreDetails": {
+                                        "value": {
+                                            "$meta": "score"
+                                        },
+                                        "details": []
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "search_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$search_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "search_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$search_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "search_scoreDetails": {
+                            "$mergeObjects": "$search_scoreDetails"
+                        },
+                        "vector_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$vector_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "vector_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$vector_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "vector_scoreDetails": {
+                            "$mergeObjects": "$vector_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$search_score",
+                                "$vector_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "search"
+                                        },
+                                        "inputPipelineRawScore": "$search_rawScore",
+                                        "weight": {
+                                            "$const": 2
+                                        }
+                                    },
+                                    "$search_scoreDetails"
+                                ]
+                            },
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "vector"
+                                        },
+                                        "inputPipelineRawScore": "$vector_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$vector_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "average"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckTwoPipelineCustomExpressionScoreDetailsDesugaring) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    name1: [
+                        {
+                            $vectorSearch: {
+                                queryVector: [1.0, 2.0, 3.0],
+                                path: "plot_embedding",
+                                numCandidates: 300,
+                                index: "vector_index",
+                                limit: 10
+                            }
+                        }
+                    ],
+                    searchPipe: [
+                        {
+                            $search: {
+                                index: "search_index",
+                                text: {
+                                    query: "mystery",
+                                    path: "genres"
+                                },
+                                scoreDetails: true
+                            }
+                        }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                method: "expression",
+                expression: {$sum: ["$$name1", 5.0]}
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$vectorSearch": {
+                        "queryVector": [
+                            1,
+                            2,
+                            3
+                        ],
+                        "path": "plot_embedding",
+                        "numCandidates": 300,
+                        "index": "vector_index",
+                        "limit": 10
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 1
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$name1_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "name1_scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$search": {
+                                    "mongotQuery": {
+                                        "index": "search_index",
+                                        "text": {
+                                            "query": "mystery",
+                                            "path": "genres"
+                                        },
+                                        "scoreDetails": true
+                                    },
+                                    "requiresSearchSequenceToken": false,
+                                    "requiresSearchMetaCursor": true
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "searchPipe_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "searchPipe_rawScore": {
+                                        "$meta": "score"
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": "$searchPipe_score"
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "searchPipe_scoreDetails": {
+                                        "$meta": "scoreDetails"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "name1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name1_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$name1_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "name1_scoreDetails": {
+                            "$mergeObjects": "$name1_scoreDetails"
+                        },
+                        "searchPipe_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$searchPipe_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "searchPipe_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$searchPipe_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "searchPipe_scoreDetails": {
+                            "$mergeObjects": "$searchPipe_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$let": {
+                                "vars": {
+                                    "name1": "$name1_score",
+                                    "searchPipe": "$searchPipe_score"
+                                },
+                                "in": {
+                                    "$sum": [
+                                        "$$name1",
+                                        {
+                                            "$const": 5
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "name1"
+                                        },
+                                        "inputPipelineRawScore": "$name1_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$name1_scoreDetails"
+                                ]
+                            },
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "searchPipe"
+                                        },
+                                        "inputPipelineRawScore": "$searchPipe_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$searchPipe_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "custom expression"
+                                },
+                                "expression": {
+                                    "$const": "{ string: { $sum: [ '$$name1', 5.0 ] } }"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest, CheckTwoPipelineScoreInputPipelineScoreDetailsDesugaring) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    scorePipe1: [
+                        { $match : { author : "Agatha Christie" } },
+                        { $score: { score: "$age", normalizeFunction: "none" } }
+                    ],
+                    scorePipe2: [
+                        { $score: { score: { $add: [10, 2] }, normalizeFunction: "sigmoid" } }
+                    ]
+                },
+                normalization: "none"
+            },
+            combination: {
+                method: "avg"
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$match": {
+                        "author": "Agatha Christie"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$age"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 1
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$scorePipe1_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$add": [
+                                            {"$const": 10},
+                                            {"$const": 2}
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$divide": [
+                                            {
+                                                "$const": 1
+                                            },
+                                            {
+                                                "$add": [
+                                                    {
+                                                        "$const": 1
+                                                    },
+                                                    {
+                                                        "$exp": [
+                                                            {
+                                                                "$multiply": [
+                                                                    {
+                                                                        "$const": -1
+                                                                    },
+                                                                    {
+                                                                        "$meta": "score"
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_rawScore": {
+                                        "$meta": "score"
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": "$scorePipe2_score"
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_scoreDetails": {
+                                        "value": {
+                                            "$meta": "score"
+                                        },
+                                        "details": []
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "scorePipe1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe1_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe1_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe1_scoreDetails": {
+                            "$mergeObjects": "$scorePipe1_scoreDetails"
+                        },
+                        "scorePipe2_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe2_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe2_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe2_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe2_scoreDetails": {
+                            "$mergeObjects": "$scorePipe2_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$scorePipe1_score",
+                                "$scorePipe2_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "scorePipe1"
+                                        },
+                                        "inputPipelineRawScore": "$scorePipe1_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$scorePipe1_scoreDetails"
+                                ]
+                            },
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "scorePipe2"
+                                        },
+                                        "inputPipelineRawScore": "$scorePipe2_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$scorePipe2_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "average"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest,
+       CheckTwoPipelineScoreInputPipelineSigmoidScoreDetailsDesugaring) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    scorePipe1: [
+                        { $match : { author : "Agatha Christie" } },
+                        { $score: { score: "$age", normalizeFunction: "none" } }
+                    ],
+                    scorePipe2: [
+                        { $score: { score: { $add: [10, 2] }, normalizeFunction: "none" } }
+                    ]
+                },
+                normalization: "sigmoid"
+            },
+            combination: {
+                method: "avg"
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+        R"({
+            "expectedStages": [
+                {
+                    "$match": {
+                        "author": "Agatha Christie"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$age"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_score": {
+                            "$multiply": [
+                                {
+                                    "$divide": [
+                                        {
+                                            "$const": 1
+                                        },
+                                        {
+                                            "$add": [
+                                                {
+                                                    "$const": 1
+                                                },
+                                                {
+                                                    "$exp": [
+                                                        {
+                                                            "$multiply": [
+                                                                {
+                                                                    "$const": -1
+                                                                },
+                                                                {
+                                                                    "$meta": "score"
+                                                                }
+                                                            ]
+                                                        }
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "$const": 1
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$scorePipe1_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$add": [
+                                            {
+                                                "$const": 10
+                                            },
+                                            {
+                                                "$const": 2
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_score": {
+                                        "$multiply": [
+                                            {
+                                                "$divide": [
+                                                    {
+                                                        "$const": 1
+                                                    },
+                                                    {
+                                                        "$add": [
+                                                            {
+                                                                "$const": 1
+                                                            },
+                                                            {
+                                                                "$exp": [
+                                                                    {
+                                                                        "$multiply": [
+                                                                            {
+                                                                                "$const": -1
+                                                                            },
+                                                                            {
+                                                                                "$meta": "score"
+                                                                            }
+                                                                        ]
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_rawScore": {
+                                        "$meta": "score"
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": "$scorePipe2_score"
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_scoreDetails": {
+                                        "value": {
+                                            "$meta": "score"
+                                        },
+                                        "details": []
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "scorePipe1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe1_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe1_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe1_scoreDetails": {
+                            "$mergeObjects": "$scorePipe1_scoreDetails"
+                        },
+                        "scorePipe2_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe2_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe2_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe2_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe2_scoreDetails": {
+                            "$mergeObjects": "$scorePipe2_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$scorePipe1_score",
+                                "$scorePipe2_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "scorePipe1"
+                                        },
+                                        "inputPipelineRawScore": "$scorePipe1_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$scorePipe1_scoreDetails"
+                                ]
+                            },
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "scorePipe2"
+                                        },
+                                        "inputPipelineRawScore": "$scorePipe2_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$scorePipe2_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "sigmoid"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "average"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })",
+        asOneObj);
+}
+
+TEST_F(DocumentSourceScoreFusionTest,
+       CheckTwoPipelineScoreScoreDetailsInputPipelineScoreDetailsDesugaring) {
+    NamespaceString fromNs = NamespaceString::createNamespaceString_forTest("test.pipeline_test");
+    getExpCtx()->setResolvedNamespaces(
+        ResolvedNamespaceMap{{fromNs, {fromNs, std::vector<BSONObj>()}}});
+    auto spec = fromjson(R"({
+        $scoreFusion: {
+            input: {
+                pipelines: {
+                    scorePipe1: [
+                        { $match : { author : "Agatha Christie" } },
+                        { $score: { score: "$age", normalizeFunction: "none", scoreDetails: true } }
+                    ],
+                    scorePipe2: [
+                        { $score: {
+                            score: { $add: [10, 2] },
+                            normalizeFunction: "sigmoid",
+                            weight: 0.5,
+                            scoreDetails: true }
+                        }
+                    ]
+                },
+                normalization: "sigmoid"
+            },
+            combination: {
+                method: "avg"
+            },
+            scoreDetails: true
+        }
+     })");
+
+    const auto desugaredList =
+        DocumentSourceScoreFusion::createFromBson(spec.firstElement(), getExpCtx());
+    const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+    std::string expectedStages = std::string(R"({
+            "expectedStages": [
+                {
+                    "$match": {
+                        "author": "Agatha Christie"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$age"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the score calculated from multiplying a weight in the range [0,1] with either a normalized or nonnormalized value:"
+                            },
+                            "rawScore": "$age",
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "weight": {
+                                "$const": 1
+                            },
+                            "expression": {
+                                "$const": "{ string: '$age' }"
+                            },
+                            "details": []
+                        }
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_score": {
+                            "$multiply": [
+                                {
+                                    "$divide": [
+                                        {
+                                            "$const": 1
+                                        },
+                                        {
+                                            "$add": [
+                                                {
+                                                    "$const": 1
+                                                },
+                                                {
+                                                    "$exp": [
+                                                        {
+                                                            "$multiply": [
+                                                                {
+                                                                    "$const": -1
+                                                                },
+                                                                {
+                                                                    "$meta": "score"
+                                                                }
+                                                            ]
+                                                        }
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "$const": 1
+                                }
+                            ]
+                        }
+                    }
+                },)") +
+        std::string(R"(
+                {
+                    "$addFields": {
+                        "scorePipe1_rawScore": {
+                            "$meta": "score"
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$scorePipe1_score"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "scorePipe1_scoreDetails": {
+                            "$meta": "scoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$unionWith": {
+                        "coll": "pipeline_test",
+                        "pipeline": [
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$add": [
+                                            {
+                                                "$const": 10
+                                            },
+                                            {
+                                                "$const": 2
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$divide": [
+                                            {
+                                                "$const": 1
+                                            },
+                                            {
+                                                "$add": [
+                                                    {
+                                                        "$const": 1
+                                                    },
+                                                    {
+                                                        "$exp": [
+                                                            {
+                                                                "$multiply": [
+                                                                    {
+                                                                        "$const": -1
+                                                                    },
+                                                                    {
+                                                                        "$meta": "score"
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": {
+                                        "$multiply": [
+                                            {
+                                                "$meta": "score"
+                                            },
+                                            {
+                                                "$const": 0.5
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "scoreDetails": {
+                                        "value": {
+                                            "$meta": "score"
+                                        },
+                                        "description": {
+                                            "$const": "the score calculated from multiplying a weight in the range [0,1] with either a normalized or nonnormalized value:"
+                                        },
+                                        "rawScore": {
+                                            "$add": [
+                                                {
+                                                    "$const": 10
+                                                },
+                                                {
+                                                    "$const": 2
+                                                }
+                                            ]
+                                        },
+                                        "normalization": {
+                                            "$const": "sigmoid"
+                                        },
+                                        "weight": {
+                                            "$const": 0.5
+                                        },
+                                        "expression": {
+                                            "$const": "{ string: { $add: [ 10, 2 ] } }"
+                                        },
+                                        "details": []
+                                    }
+                                }
+                            },
+                            {
+                                "$replaceRoot": {
+                                    "newRoot": {
+                                        "docs": "$$ROOT"
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_score": {
+                                        "$multiply": [
+                                            {
+                                                "$divide": [
+                                                    {
+                                                        "$const": 1
+                                                    },
+                                                    {
+                                                        "$add": [
+                                                            {
+                                                                "$const": 1
+                                                            },
+                                                            {
+                                                                "$exp": [
+                                                                    {
+                                                                        "$multiply": [
+                                                                            {
+                                                                                "$const": -1
+                                                                            },
+                                                                            {
+                                                                                "$meta": "score"
+                                                                            }
+                                                                        ]
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "$const": 1
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_rawScore": {
+                                        "$meta": "score"
+                                    }
+                                }
+                            },
+                            {
+                                "$setMetadata": {
+                                    "score": "$scorePipe2_score"
+                                }
+                            },
+                            {
+                                "$addFields": {
+                                    "scorePipe2_scoreDetails": {
+                                        "$meta": "scoreDetails"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },)") +
+        std::string(R"(
+                {
+                    "$group": {
+                        "_id": "$docs._id",
+                        "docs": {
+                            "$first": "$docs"
+                        },
+                        "scorePipe1_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe1_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe1_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe1_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe1_scoreDetails": {
+                            "$mergeObjects": "$scorePipe1_scoreDetails"
+                        },
+                        "scorePipe2_score": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe2_score",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe2_rawScore": {
+                            "$max": {
+                                "$ifNull": [
+                                    "$scorePipe2_rawScore",
+                                    {
+                                        "$const": 0
+                                    }
+                                ]
+                            }
+                        },
+                        "scorePipe2_scoreDetails": {
+                            "$mergeObjects": "$scorePipe2_scoreDetails"
+                        },
+                        "$willBeMerged": false
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$avg": [
+                                "$scorePipe1_score",
+                                "$scorePipe2_score"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "calculatedScoreDetails": [
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "scorePipe1"
+                                        },
+                                        "inputPipelineRawScore": "$scorePipe1_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$scorePipe1_scoreDetails"
+                                ]
+                            },
+                            {
+                                "$mergeObjects": [
+                                    {
+                                        "inputPipelineName": {
+                                            "$const": "scorePipe2"
+                                        },
+                                        "inputPipelineRawScore": "$scorePipe2_rawScore",
+                                        "weight": {
+                                            "$const": 1
+                                        }
+                                    },
+                                    "$scorePipe2_scoreDetails"
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the value calculated by combining the scores (either normalized or raw) across input pipelines from which this document is output from:"
+                            },
+                            "normalization": {
+                                "$const": "sigmoid"
+                            },
+                            "combination": {
+                                "method": {
+                                    "$const": "average"
+                                }
+                            },
+                            "details": "$calculatedScoreDetails"
+                        }
+                    }
+                },
+                {
+                    "$sort": {
+                        "$computed0": {
+                            "$meta": "score"
+                        },
+                        "_id": 1
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                }
+            ]
+        })");
+    ASSERT_BSONOBJ_EQ(  // NOLINT
+        fromjson(expectedStages),
         asOneObj);
 }
 }  // namespace

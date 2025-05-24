@@ -47,6 +47,7 @@
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/read_concern_level.h"
 #include "mongo/db/repl/repl_client_info.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/transaction_coordinator_service.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
@@ -57,7 +58,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/platform/compiler.h"
 #include "mongo/rpc/op_msg.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
@@ -288,7 +288,9 @@ public:
                         opCtx, *opCtx->getLogicalSessionId(), txnNumberAndRetryCounter);
                 }
             }
-
+            // Instruct the storage engine to not do any extra eviction while aborting transactions
+            // so that resources will not get stuck.
+            shard_role_details::getRecoveryUnit(opCtx)->setNoEvictionAfterCommitOrRollback();
             txnParticipant.abortTransaction(opCtx);
 
             if (MONGO_unlikely(

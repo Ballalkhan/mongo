@@ -55,6 +55,7 @@
 #include "mongo/db/s/single_transaction_coordinator_stats.h"
 #include "mongo/db/s/transaction_coordinator.h"
 #include "mongo/db/s/transaction_coordinator_metrics_observer.h"
+#include "mongo/db/s/transaction_coordinator_service.h"
 #include "mongo/db/s/transaction_coordinator_util.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/vector_clock_mutable.h"
@@ -116,10 +117,7 @@ ExecutorFuture<void> waitForMajorityWithHangFailpoint(
                 if (!data["useUninterruptibleSleep"].eoo()) {
                     failpoint.pauseWhileSet();
                 } else {
-                    // TODO(SERVER-74658): Please revisit if this thread could be made killable.
-                    ThreadClient tc(failPointName,
-                                    service->getService(ClusterRole::ShardServer),
-                                    ClientOperationKillableByStepdown{false});
+                    ThreadClient tc(failPointName, service->getService(ClusterRole::ShardServer));
                     auto opCtx = tc->makeOperationContext();
                     failpoint.pauseWhileSet(opCtx.get());
                 }
@@ -153,8 +151,7 @@ TransactionCoordinator::TransactionCoordinator(
     const LogicalSessionId& lsid,
     const TxnNumberAndRetryCounter& txnNumberAndRetryCounter,
     std::unique_ptr<txn::AsyncWorkScheduler> scheduler,
-    Date_t deadline,
-    const CancellationToken& cancelToken)
+    Date_t deadline)
     : _serviceContext(operationContext->getServiceContext()),
       _lsid(lsid),
       _txnNumberAndRetryCounter(txnNumberAndRetryCounter),
@@ -162,14 +159,18 @@ TransactionCoordinator::TransactionCoordinator(
       _sendPrepareScheduler(_scheduler->makeChildScheduler()),
       _transactionCoordinatorMetricsObserver(
           std::make_unique<TransactionCoordinatorMetricsObserver>()),
-      _deadline(deadline),
-      _cancelToken(cancelToken) {
+      _deadline(deadline) {
     invariant(_txnNumberAndRetryCounter.getTxnRetryCounter());
 }
 
 void TransactionCoordinator::start(OperationContext* operationContext) {
     invariant(_scheduler, "TransactionCoordinator shutdown before starting");
     invariant(_sendPrepareScheduler, "TransactionCoordinator shutdown before starting");
+
+    onCompletion().unsafeToInlineFuture().getAsync([this, self = shared_from_this()](auto) {
+        auto* tcs = TransactionCoordinatorService::get(_serviceContext);
+        tcs->notifyCoordinatorFinished(self);
+    });
 
     auto apiParams = APIParameters::get(operationContext);
     auto kickOffCommitPF = makePromiseFuture<void>();
@@ -247,7 +248,7 @@ void TransactionCoordinator::start(OperationContext* operationContext) {
                 std::move(opTime),
                 _lsid,
                 _txnNumberAndRetryCounter,
-                _cancelToken);
+                _cancellationSource.token());
         })
         .thenRunOn(_scheduler->getExecutor())
         .then([this, self = shared_from_this(), apiParams] {
@@ -363,7 +364,7 @@ void TransactionCoordinator::start(OperationContext* operationContext) {
                                                     std::move(opTime),
                                                     _lsid,
                                                     _txnNumberAndRetryCounter,
-                                                    _cancelToken);
+                                                    _cancellationSource.token());
         })
         .then([this, self = shared_from_this(), apiParams] {
             {
@@ -535,6 +536,10 @@ void TransactionCoordinator::cancelIfCommitNotYetStarted() {
 
     _kickOffCommitPromise.setError({ErrorCodes::TransactionCoordinatorCanceled,
                                     "Transaction exceeded deadline or newer transaction started"});
+}
+
+void TransactionCoordinator::cancel() {
+    _cancellationSource.cancel();
 }
 
 bool TransactionCoordinator::_reserveKickOffCommitPromise() {

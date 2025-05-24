@@ -32,9 +32,9 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/storage/record_store.h"
 
 namespace mongo {
 
@@ -44,12 +44,6 @@ namespace mongo {
  */
 enum ListIndexesInclude { Nothing, BuildUUID, IndexBuildInfo };
 
-/**
- * Return a list of the indexes on the given collection.
- */
-StatusWith<std::list<BSONObj>> listIndexes(OperationContext* opCtx,
-                                           const NamespaceStringOrUUID& ns,
-                                           ListIndexesInclude additionalInclude);
 std::list<BSONObj> listIndexesInLock(OperationContext* opCtx,
                                      const CollectionPtr& collection,
                                      const NamespaceString& nss,

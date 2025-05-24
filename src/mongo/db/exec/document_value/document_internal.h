@@ -30,6 +30,7 @@
 #pragma once
 
 #include <boost/intrusive_ptr.hpp>
+#include <type_traits>
 
 #include "mongo/base/static_assert.h"
 #include "mongo/db/exec/document_value/document_metadata_fields.h"
@@ -37,6 +38,15 @@
 #include "mongo/util/intrusive_counter.h"
 
 namespace mongo {
+
+/**
+ * The following concept is used in several Document APIs that accept templated field name
+ * parameters by value. By using this concept we disallow passing potentially expensive-to-copy
+ * 'std::string' parameters for these APIs.
+ */
+template <typename T>
+concept AnyFieldNameTypeButStdString = (!std::is_same_v<T, std::string>);
+
 /** Helper class to make the position in a document abstract
  *  Warning: This is NOT guaranteed to be the ordered position.
  *           eg. the first field may not be at Position(0)
@@ -297,8 +307,8 @@ public:
         return _sd.copy(dest, len);
     }
 
-    constexpr const char* rawData() const noexcept {
-        return _sd.rawData();
+    constexpr const char* data() const noexcept {
+        return _sd.data();
     }
 
 private:
@@ -327,7 +337,7 @@ struct FieldNameHasher {
 
     std::size_t operator()(StringData sd) const {
         // Use the default absl string hasher.
-        return absl::Hash<absl::string_view>{}(absl::string_view(sd.rawData(), sd.size()));
+        return absl::Hash<absl::string_view>{}(absl::string_view(sd.data(), sd.size()));
     }
 
     std::size_t operator()(const std::string& s) const {
@@ -406,7 +416,7 @@ public:
     enum class LookupPolicy {
         // When looking up a field check the cache only.
         kCacheOnly,
-        // Look up in a cache and when not found search the unrelying BSON.
+        // Look up in a cache and when not found search the underlying BSON.
         kCacheAndBSON
     };
 
@@ -578,7 +588,7 @@ public:
         _metadataFields = std::move(metadata);
     }
 
-    template <typename T>
+    template <AnyFieldNameTypeButStdString T>
     static unsigned hashKey(T name) {
         return FieldNameHasher()(name);
     }
@@ -652,7 +662,7 @@ private:
     void alloc(unsigned newSize);
 
     /// Call after adding field to _cache and increasing _numFields
-    template <typename T>
+    template <AnyFieldNameTypeButStdString T>
     void addFieldToHashTable(T field, Position pos);
 
     // assumes _hashTabMask is (power of two) - 1
@@ -673,7 +683,7 @@ private:
         memset(static_cast<void*>(_hashTab), -1, hashTabBytes());
     }
 
-    template <typename T>
+    template <AnyFieldNameTypeButStdString T>
     unsigned bucketForKey(T field) const {
         return hashKey(field) & _hashTabMask;
     }

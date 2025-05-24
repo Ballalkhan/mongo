@@ -46,6 +46,7 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/bson/bson_field.h"
 #include "mongo/bson/bsonelement.h"
+#include "mongo/bson/json.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/cancelable_operation_context.h"
@@ -59,7 +60,6 @@
 #include "mongo/db/error_labels.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/generic_argument_util.h"
-#include "mongo/db/json.h"
 #include "mongo/db/logical_time.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
@@ -1284,9 +1284,9 @@ void ShardingCatalogManager::withTransaction(
         try {
             startTransactionWithNoopFind(asr.opCtx(), namespaceForInitialFind, txnNumber);
             func(asr.opCtx(), txnNumber);
-        } catch (const ExceptionForCat<ErrorCategory::NotPrimaryError>&) {
+        } catch (const ExceptionFor<ErrorCategory::NotPrimaryError>&) {
             throw;
-        } catch (const ExceptionForCat<ErrorCategory::ShutdownError>&) {
+        } catch (const ExceptionFor<ErrorCategory::ShutdownError>&) {
             throw;
         } catch (const DBException& ex) {
             if (isTransientTransactionError(

@@ -68,7 +68,7 @@
 
 namespace mongo {
 
-class DurableCatalog;
+class MDBCatalog;
 class KVEngine;
 
 struct StorageEngineOptions {
@@ -83,6 +83,7 @@ class StorageEngineImpl final : public StorageEngine {
 public:
     StorageEngineImpl(OperationContext* opCtx,
                       std::unique_ptr<KVEngine> engine,
+                      std::unique_ptr<KVEngine> spillKVEngine,
                       StorageEngineOptions options = StorageEngineOptions());
 
     ~StorageEngineImpl() override;
@@ -90,6 +91,8 @@ public:
     void notifyStorageStartupRecoveryComplete() override;
 
     void notifyReplStartupRecoveryComplete(RecoveryUnit&) override;
+
+    void setInStandaloneMode(bool inStandaloneMode) override;
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() override;
 
@@ -121,6 +124,9 @@ public:
     Status repairRecordStore(OperationContext* opCtx,
                              RecordId catalogId,
                              const NamespaceString& nss) override;
+
+    std::unique_ptr<SpillTable> makeSpillTable(OperationContext* opCtx,
+                                               KeyFormat keyFormat) override;
 
     std::unique_ptr<TemporaryRecordStore> makeTemporaryRecordStore(OperationContext* opCtx,
                                                                    KeyFormat keyFormat) override;
@@ -168,8 +174,6 @@ public:
 
     bool supportsReadConcernSnapshot() const final;
 
-    bool supportsOplogTruncateMarkers() const final;
-
     void clearDropPendingState(OperationContext* opCtx) final;
 
     SnapshotManager* getSnapshotManager() const final;
@@ -206,16 +210,16 @@ public:
 
     std::string getFilesystemPathForDb(const DatabaseName& dbName) const override;
 
-    DurableCatalog* getDurableCatalog() override;
+    MDBCatalog* getMDBCatalog() override;
 
-    const DurableCatalog* getDurableCatalog() const override;
+    const MDBCatalog* getMDBCatalog() const override;
 
     /**
-     * When loading after an unclean shutdown, this performs cleanup on the DurableCatalog.
+     * When loading after an unclean shutdown, this performs cleanup on the MDBCatalog.
      */
-    void loadDurableCatalog(OperationContext* opCtx, LastShutdownState lastShutdownState) final;
+    void loadMDBCatalog(OperationContext* opCtx, LastShutdownState lastShutdownState) final;
 
-    void closeDurableCatalog(OperationContext* opCtx) final;
+    void closeMDBCatalog(OperationContext* opCtx) final;
 
     TimestampMonitor* getTimestampMonitor() const {
         return _timestampMonitor.get();
@@ -277,12 +281,14 @@ public:
 
     size_t getCacheSizeMB() override;
 
+    bool hasOngoingLiveRestore() override;
+
 private:
     using CollIter = std::list<std::string>::iterator;
 
     /**
      * When called in a repair context (_options.forRepair=true), attempts to recover a collection
-     * whose entry is present in the DurableCatalog, but missing from the KVEngine. Returns an
+     * whose entry is present in the MDBCatalog, but missing from the KVEngine. Returns an
      * error Status if called outside of a repair context or the implementation of
      * KVEngine::recoverOrphanedIdent returns an error other than DataModifiedByRepair.
      *
@@ -300,7 +306,7 @@ private:
      * the given catalog entry.
      */
     void _checkForIndexFiles(OperationContext* opCtx,
-                             const DurableCatalog::EntryIdentifier& entry,
+                             const MDBCatalog::EntryIdentifier& entry,
                              std::vector<std::string>& identsKnownToStorageEngine) const;
 
     void _dumpCatalog(OperationContext* opCtx);
@@ -325,8 +331,12 @@ private:
 
     class RemoveDBChange;
 
+    // Main KVEngine instance used for all user tables.
     // This must be the first member so it is destroyed last.
     std::unique_ptr<KVEngine> _engine;
+
+    // KVEngine instance that is used for creating SpillTables.
+    std::unique_ptr<KVEngine> _spillKVEngine;
 
     const StorageEngineOptions _options;
 
@@ -339,7 +349,7 @@ private:
     const bool _supportsCappedCollections;
 
     std::unique_ptr<RecordStore> _catalogRecordStore;
-    std::unique_ptr<DurableCatalog> _catalog;
+    std::unique_ptr<MDBCatalog> _catalog;
 
     // Flag variable that states if the storage engine is in backup mode.
     bool _inBackupMode = false;

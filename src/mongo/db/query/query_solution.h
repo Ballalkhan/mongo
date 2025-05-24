@@ -71,11 +71,11 @@
 #include "mongo/db/query/projection.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/query/record_id_bound.h"
+#include "mongo/db/query/sort_pattern.h"
 #include "mongo/db/query/stage_types.h"
 #include "mongo/db/query/timeseries/bucket_spec.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/hash_utils.h"
 #include "mongo/util/id_generator.h"
 #include "mongo/util/str.h"
 

@@ -61,6 +61,7 @@
 #ifndef _WIN32
 #include <sched.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #endif
@@ -795,7 +796,7 @@ public:
         const size_t prefixLength = prefixV2.length();
 
         // Check if the input starts with the prefix
-        if (StringData{line}.startsWith(prefixV2)) {
+        if (StringData{line}.starts_with(prefixV2)) {
             // cgroup v2.
             return fmt::format("/sys/fs/cgroup{}", line.substr(prefixLength));
         } else {
@@ -823,6 +824,37 @@ public:
         cpuUclampMin = parseLineOrDefault(fmt::format("{}/cpu.uclamp.min", path));
         cpuUclampMax = parseLineOrDefault(fmt::format("{}/cpu.uclamp.max", path));
         cpuWeight = parseLineOrDefault(fmt::format("{}/cpu.weight", path));
+    }
+
+    static int parseProcIntWithDefault(const char* path, int defaultValue) {
+        std::ifstream proc{path};
+        if (!proc) {
+            LOGV2(10181001,
+                  "Unable to open procfs path, falling back to default value",
+                  "path"_attr = path,
+                  "default"_attr = defaultValue);
+            return defaultValue;
+        }
+        int value;
+        if (!(proc >> value)) {
+            LOGV2(10181002,
+                  "Unable to read an integer from procfs file, falling back to default value",
+                  "path"_attr = path,
+                  "default"_attr = defaultValue);
+            return defaultValue;
+        }
+        std::string remainingNonWhitespace;
+        if (proc >> remainingNonWhitespace) {
+            LOGV2(10181003,
+                  "procfs file contains trailing non-integer data, falling back to default "
+                  "value",
+                  "path"_attr = path,
+                  "int_data"_attr = value,
+                  "extra_data"_attr = remainingNonWhitespace,
+                  "default"_attr = defaultValue);
+            return defaultValue;
+        }
+        return value;
     }
 };
 
@@ -1102,6 +1134,8 @@ void ProcessInfo::SystemInfo::collectSystemInfo() {
     cpuArch = unameData.machine;
     numNumaNodes = countNumaNodes();
     hasNuma = numNumaNodes;
+    defaultListenBacklog =
+        LinuxSysHelper::parseProcIntWithDefault("/proc/sys/net/core/somaxconn", SOMAXCONN);
 
     BSONObjBuilder bExtra;
     bExtra.append("versionString", LinuxSysHelper::parseLineFromFile("/proc/version"));

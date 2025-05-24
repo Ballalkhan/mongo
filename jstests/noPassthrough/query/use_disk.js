@@ -12,6 +12,11 @@ import {
     profilerHasSingleMatchingEntryOrThrow,
     profilerHasZeroMatchingEntriesOrThrow,
 } from "jstests/libs/profiler.js";
+import {
+    getAggPlanStages,
+    getPlanStage,
+    getWinningPlanFromExplain
+} from "jstests/libs/query/analyze_plan.js";
 import {ShardingTest} from "jstests/libs/shardingtest.js";
 
 const conn = MongoRunner.runMongod();
@@ -137,7 +142,78 @@ assert.gt(profileObj.sortSpilledBytes, 0, tojson(profileObj));
 assert.gt(profileObj.sortSpilledRecords, 0, tojson(profileObj));
 assert.gt(profileObj.sortSpilledDataStorageSize, 0, tojson(profileObj));
 
-// TODO SERVER-99887 - add $setWindowFields test
+//
+// Confirm that usedDisk is correctly detected for the $graphLookup stage.
+//
+coll.drop();
+assert.commandWorked(coll.insertMany([
+    {_id: 1, to: [2, 3]},
+    {_id: 2, to: [4, 5]},
+    {_id: 3, to: [6, 7]},
+    {_id: 4},
+    {_id: 5},
+    {_id: 6},
+    {_id: 7}
+]));
+assert.commandWorked(
+    testDB.adminCommand({setParameter: 1, internalDocumentSourceGraphLookupMaxMemoryBytes: 1}));
+
+const graphLookupStage = {
+        $graphLookup:
+            { from: "coll", startWith: 1, connectFromField: "to", connectToField: "_id", as: "path", depthField: "depth" }
+    };
+
+coll.aggregate([{$limit: 1}, graphLookupStage], {allowDiskUse: true});
+profileObj = getLatestProfilerEntry(testDB);
+assert.eq(profileObj.usedDisk, true, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpills, 0, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpilledBytes, 0, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpilledRecords, 0, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpilledDataStorageSize, 0, tojson(profileObj));
+
+coll.aggregate([{$limit: 1}, graphLookupStage, {$unwind: "$path"}], {allowDiskUse: true});
+profileObj = getLatestProfilerEntry(testDB);
+assert.eq(profileObj.usedDisk, true, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpills, 0, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpilledBytes, 0, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpilledRecords, 0, tojson(profileObj));
+assert.gt(profileObj.graphLookupSpilledDataStorageSize, 0, tojson(profileObj));
+
+//
+// Confirm that usedDisk is correctly detected for the $setWindowFields stage.
+//
+
+const setWindowFieldsPipeline =
+    [{$setWindowFields: {sortBy: {a: 1}, output: {as: {$addToSet: "$a"}}}}];
+
+function getSetWindowFieldsMemoryLimit() {
+    const explain = coll.explain().aggregate(setWindowFieldsPipeline);
+    // If $setWindowFields was pushed down to SBE, set a lower limit. We can't set it to 1 byte
+    // for Classic because DocumentSourceSetWindowFields will fail if it still doesn't fit into
+    // memory limit after spilling.
+    if (getPlanStage(getWinningPlanFromExplain(explain), "WINDOW")) {
+        return 1;
+    } else {
+        return 500;
+    }
+}
+
+assert.commandWorked(testDB.adminCommand({
+    setParameter: 1,
+    internalDocumentSourceSetWindowFieldsMaxMemoryBytes: getSetWindowFieldsMemoryLimit()
+}));
+resetCollection();
+coll.aggregate(setWindowFieldsPipeline, {allowDiskUse: true});
+profileObj = getLatestProfilerEntry(testDB);
+assert.eq(profileObj.usedDisk, true, tojson(profileObj));
+assert.gt(profileObj.setWindowFieldsSpills, 0, tojson(profileObj));
+assert.gt(profileObj.setWindowFieldsSpilledBytes, 0, tojson(profileObj));
+assert.gt(profileObj.setWindowFieldsSpilledRecords, 0, tojson(profileObj));
+assert.gt(profileObj.setWindowFieldsSpilledDataStorageSize, 0, tojson(profileObj));
+assert.gt(profileObj.sortSpills, 0, tojson(profileObj));
+assert.gt(profileObj.sortSpilledBytes, 0, tojson(profileObj));
+assert.gt(profileObj.sortSpilledRecords, 0, tojson(profileObj));
+assert.gt(profileObj.sortSpilledDataStorageSize, 0, tojson(profileObj));
 
 //
 // Confirm that usedDisk is correctly detected for the $lookup stage with a subsequent $unwind.
@@ -207,6 +283,39 @@ coll.aggregate(
     {allowDiskUse: true});
 profileObj = getLatestProfilerEntry(testDB);
 assert(!profileObj.hasOwnProperty("usedDisk"), tojson(profileObj));
+
+assert.commandWorked(testDB.adminCommand({
+    setParameter: 1,
+    internalQuerySlotBasedExecutionHashLookupApproxMemoryUseInBytesBeforeSpill: 1
+}));
+assert.commandWorked(testDB.adminCommand(
+    {setParameter: 1, internalQuerySlotBasedExecutionHashAggIncreasedSpilling: "never"}));
+
+function checkHashLookup(pipeline) {
+    // HashLookup spills only in SBE
+    const explain = coll.explain().aggregate(pipeline);
+    if (getAggPlanStages(explain, "EQ_LOOKUP_UNWIND").length > 0 ||
+        getAggPlanStages(explain, "EQ_LOOKUP").length > 0) {
+        coll.aggregate(pipeline, {allowDiskUse: true});
+        const profileObj = getLatestProfilerEntry(testDB);
+        assert.eq(profileObj.usedDisk, true, tojson(profileObj));
+        assert.gt(profileObj.hashLookupSpills, 0, tojson(profileObj));
+        assert.gt(profileObj.hashLookupSpilledBytes, 0, tojson(profileObj));
+        assert.gt(profileObj.hashLookupSpilledRecords, 0, tojson(profileObj));
+        assert.gt(profileObj.hashLookupSpilledDataStorageSize, 0, tojson(profileObj));
+    }
+}
+
+const lookupPipeline =
+    [{$lookup: {from: "foreign", localField: "a", foreignField: "b", as: "same"}}];
+checkHashLookup(lookupPipeline);
+
+const lookupUnwindPipeline = [
+    {$lookup: {from: "foreign", localField: "a", foreignField: "b", as: "same"}},
+    {$unwind: "$same"},
+    {$project: {same: 1}}
+];
+checkHashLookup(lookupUnwindPipeline);
 
 //
 // Test that aggregate command fails when 'allowDiskUse:false' because of insufficient available

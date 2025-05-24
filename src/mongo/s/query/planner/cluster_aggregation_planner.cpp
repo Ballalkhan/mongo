@@ -62,6 +62,7 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/exec/document_value/value.h"
 #include "mongo/db/logical_time.h"
+#include "mongo/db/memory_tracking/operation_memory_usage_tracker.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
 #include "mongo/db/pipeline/change_stream_constants.h"
 #include "mongo/db/pipeline/change_stream_invalidation_info.h"
@@ -97,6 +98,7 @@
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_commands_helpers.h"
+#include "mongo/s/collection_uuid_mismatch.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/index_version.h"
 #include "mongo/s/multi_statement_transaction_requests_sender.h"
@@ -367,7 +369,7 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
                                Document serializedCommand,
                                long long batchSize,
                                const boost::optional<CollectionRoutingInfo>& cri,
-                               DispatchShardPipelineResults&& shardDispatchResults,
+                               DispatchShardPipelineResults shardDispatchResults,
                                BSONObjBuilder* result,
                                const PrivilegeVector& privileges,
                                bool hasChangeStream,
@@ -399,6 +401,10 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
     if (mergePipeline->requiredToRunOnRouter() ||
         (!internalQueryProhibitMergingOnMongoS.load() && mergePipeline->canRunOnRouter().isOK() &&
          !shardDispatchResults.mergeShardId)) {
+
+        // Dispose of the shard pipeline since we no longer need it.
+        (void)shardDispatchResults.splitPipeline->shardsPipeline.reset();
+
         return runPipelineOnMongoS(namespaces,
                                    batchSize,
                                    std::move(shardDispatchResults.splitPipeline->mergePipeline),
@@ -586,6 +592,7 @@ BSONObj establishMergingMongosCursor(OperationContext* opCtx,
     CursorId clusterCursorId = 0;
     if (!exhausted) {
         auto authUser = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserName();
+        OperationMemoryUsageTracker::moveToCursorIfAvailable(opCtx, ccc.get());
         clusterCursorId = uassertStatusOK(Grid::get(opCtx)->getCursorManager()->registerCursor(
             opCtx,
             ccc.releaseCursor(),
@@ -776,9 +783,11 @@ AggregationTargeter AggregationTargeter::make(OperationContext* opCtx,
 
     auto policy = pipeline->requiredToRunOnRouter() ? TargetingPolicy::kMongosRequired
                                                     : TargetingPolicy::kAnyShard;
-    if (!cri && pipelineDataSource == PipelineDataSource::kGeneratesOwnDataOnce) {
-        // If we don't have a routing table and the fist stage is marked as `kGeneratesOwnDataOnce`,
-        // we must run on mongos.
+    if (pipelineDataSource == PipelineDataSource::kGeneratesOwnDataOnce &&
+        !pipeline->needsSpecificShardMerger() && pipeline->canRunOnRouter().isOK()) {
+        // If we don't have a routing table, the first stage is marked as `kGeneratesOwnDataOnce`,
+        // we aren't required to merge on a specific ShardId, and the pipeline can run on the
+        // router, we will run on mongos.
         policy = TargetingPolicy::kMongosRequired;
     }
     if (perShardCursor) {
@@ -834,6 +843,7 @@ Status dispatchPipelineAndMerge(OperationContext* opCtx,
                                 bool eligibleForSampling,
                                 bool requestQueryStatsFromRemotes) {
     auto expCtx = targeter.pipeline->getContext();
+
     // If not, split the pipeline as necessary and dispatch to the relevant shards.
     auto shardDispatchResults =
         sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
@@ -877,7 +887,7 @@ Status dispatchPipelineAndMerge(OperationContext* opCtx,
     // If we sent the entire pipeline to a single shard, store the remote cursor and return.
     if (!shardDispatchResults.splitPipeline) {
         tassert(4457012,
-                "pipeline was split, but more than one remote cursor is present",
+                "pipeline was not split, but more than one remote cursor is present",
                 shardDispatchResults.remoteCursors.size() == 1);
         auto&& remoteCursor = std::move(shardDispatchResults.remoteCursors.front());
         const auto shardId = remoteCursor->getShardId().toString();

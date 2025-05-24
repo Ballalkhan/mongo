@@ -44,6 +44,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/exec/agg/stage.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/document_value/document_metadata_fields.h"
 #include "mongo/db/exec/document_value/value.h"
@@ -404,9 +405,13 @@ public:
     void addFinalSource(boost::intrusive_ptr<DocumentSource> source);
 
     /**
-     * Returns the next result from the pipeline, or boost::none if there are no more results.
+     * Returns the next document from the pipeline, or boost::none if there are no more documents.
      */
     boost::optional<Document> getNext();
+    /**
+     * Returns the next result from the pipeline.
+     */
+    exec::agg::GetNextResult getNextResult();
 
     /**
      * Write the pipeline's operators to a std::vector<Value>, providing the level of detail
@@ -473,6 +478,14 @@ public:
 
     SourceContainer& getSources() {
         return _sources;
+    }
+
+    MONGO_COMPILER_ALWAYS_INLINE SourceContainer::size_type size() const {
+        return _sources.size();
+    }
+
+    MONGO_COMPILER_ALWAYS_INLINE bool empty() const {
+        return _sources.empty();
     }
 
     /**

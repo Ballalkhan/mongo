@@ -219,6 +219,12 @@ private:
 
 
 /**
+ * This namespace contains implementation details for our error handling code and should not be used
+ * directly in general code.
+ */
+namespace error_details {
+
+/**
  * The base class of all DBExceptions for codes of the given ErrorCategory to allow catching by
  * category.
  */
@@ -234,18 +240,12 @@ protected:
     }
 };
 
-/**
- * This namespace contains implementation details for our error handling code and should not be used
- * directly in general code.
- */
-namespace error_details {
-
 template <ErrorCodes::Error kCode, typename... Bases>
-class ExceptionForImpl final : public Bases... {
+class ExceptionForCode final : public Bases... {
 public:
     MONGO_STATIC_ASSERT(isNamedCode<kCode>);
 
-    ExceptionForImpl(const Status& status) : AssertionException(status) {
+    ExceptionForCode(const Status& status) : AssertionException(status) {
         invariant(status.code() == kCode);
     }
 
@@ -262,45 +262,58 @@ private:
 };
 
 template <ErrorCodes::Error code, typename categories = ErrorCategoriesFor<code>>
-struct ExceptionForDispatcher;
+struct ExceptionForCodeDispatcher;
 
 template <ErrorCodes::Error code, ErrorCategory... categories>
-struct ExceptionForDispatcher<code, CategoryList<categories...>> {
+struct ExceptionForCodeDispatcher<code, CategoryList<categories...>> {
     using type = std::conditional_t<sizeof...(categories) == 0,
-                                    ExceptionForImpl<code, AssertionException>,
-                                    ExceptionForImpl<code, ExceptionForCat<categories>...>>;
+                                    ExceptionForCode<code, AssertionException>,
+                                    ExceptionForCode<code, ExceptionForCat<categories>...>>;
 };
 
+// Note: second template parameter shouldn't be necessary but is on MSVC.
+// It seems to be unable to disambiguate the partial specializations of an auto NTTP
+// with concrete types and needs a dummy type template parameter to do so.
+template <auto codeOrCat, typename = decltype(codeOrCat)>
+struct ExceptionForDispatcher;
+
+template <ErrorCodes::Error code>
+struct ExceptionForDispatcher<code, ErrorCodes::Error> : ExceptionForCodeDispatcher<code> {};
+
 template <>
-struct ExceptionForDispatcher<ErrorCodes::WriteConflict> {
+struct ExceptionForDispatcher<ErrorCodes::WriteConflict, ErrorCodes::Error> {
     using type = WriteConflictException;
 };
 
 template <>
-struct ExceptionForDispatcher<ErrorCodes::TemporarilyUnavailable> {
+struct ExceptionForDispatcher<ErrorCodes::TemporarilyUnavailable, ErrorCodes::Error> {
     using type = TemporarilyUnavailableException;
 };
 
 template <>
-struct ExceptionForDispatcher<ErrorCodes::TransactionTooLargeForCache> {
+struct ExceptionForDispatcher<ErrorCodes::TransactionTooLargeForCache, ErrorCodes::Error> {
     using type = TransactionTooLargeForCacheException;
+};
+
+template <ErrorCategory category>
+struct ExceptionForDispatcher<category, ErrorCategory> {
+    using type = ExceptionForCat<category>;
 };
 
 }  // namespace error_details
 
 
 /**
- * Resolves to the concrete exception type for the given error code.
+ * Resolves to the concrete exception type for the given ErrorCode or ErrorCategory.
  *
- * It will be a subclass of both AssertionException, along with ExceptionForCat<> of every category
- * that the code belongs to.
- *
- * TODO in C++17 we can combine this with ExceptionForCat by doing something like:
- * template <auto codeOrCategory> using ExceptionFor = typename
- *      error_details::ExceptionForDispatcher<decltype(codeOrCategory)>::type;
+ * It will be a subclass of AssertionException, and when passed an error code, it will also be a
+ * subclass of ExceptionFor<ErrorCategory> of every category that the code belongs to.
  */
-template <ErrorCodes::Error code>
-using ExceptionFor = typename error_details::ExceptionForDispatcher<code>::type;
+template <auto codeOrCatagory>
+requires std::is_same_v<decltype(codeOrCatagory), ErrorCodes::Error> ||
+    std::is_same_v<decltype(codeOrCatagory), ErrorCategory>
+using ExceptionFor = typename error_details::ExceptionForDispatcher<codeOrCatagory>::type;
+
 
 MONGO_COMPILER_NORETURN void verifyFailed(const char* expr,
                                           SourceLocation loc = MONGO_SOURCE_LOCATION());
@@ -317,11 +330,11 @@ namespace fassert_detail {
 /** Convertible from exactly `int`, but not from bool or other types that convert to int. */
 struct MsgId {
     /** Allow exactly int */
-    explicit(false) MsgId(int id) : id{id} {}
+    constexpr explicit(false) MsgId(int id) : id{id} {}
 
     /** Allow copy */
-    MsgId(const MsgId&) = default;
-    MsgId& operator=(const MsgId&) = default;
+    constexpr MsgId(const MsgId&) = default;
+    constexpr MsgId& operator=(const MsgId&) = default;
 
     /** Reject everything else. */
     template <typename T, std::enable_if_t<!std::is_same_v<std::decay_t<T>, MsgId>, int> = 0>
@@ -342,20 +355,22 @@ MONGO_COMPILER_NORETURN void failedNoTrace(MsgId msgid,
                                            SourceLocation loc = MONGO_SOURCE_LOCATION()) noexcept;
 
 /** Aborts if `cond` is false. */
-inline void check(MsgId msgid, bool cond, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void check(MsgId msgid, bool cond, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!cond)) {
         failed(msgid, loc);
     }
 }
 
-inline void check(MsgId msgid, const Status& status, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void check(MsgId msgid,
+                     const Status& status,
+                     SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         failed(msgid, status, loc);
     }
 }
 
 template <typename T>
-T check(MsgId msgid, StatusWith<T> sw, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T check(MsgId msgid, StatusWith<T> sw, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!sw.isOK())) {
         failed(msgid, sw.getStatus(), loc);
     }
@@ -366,7 +381,7 @@ T check(MsgId msgid, StatusWith<T> sw, SourceLocation loc = MONGO_SOURCE_LOCATIO
 template <typename T, std::enable_if_t<std::is_convertible_v<T, StringData>, int> = 0>
 void check(MsgId msgid, T&& cond, SourceLocation loc = MONGO_SOURCE_LOCATION()) = delete;
 
-inline void checkNoTrace(MsgId msgid, bool cond, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void checkNoTrace(MsgId msgid, bool cond, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!cond)) {
         failedNoTrace(msgid, loc);
     }
@@ -376,16 +391,18 @@ inline void checkNoTrace(MsgId msgid, bool cond, SourceLocation loc = MONGO_SOUR
 template <typename T, std::enable_if_t<std::is_convertible_v<T, StringData>, int> = 0>
 void checkNoTrace(MsgId msgid, T&& cond, SourceLocation loc = MONGO_SOURCE_LOCATION()) = delete;
 
-inline void checkNoTrace(MsgId msgid,
-                         const Status& status,
-                         SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void checkNoTrace(MsgId msgid,
+                            const Status& status,
+                            SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         failedNoTrace(msgid, status, loc);
     }
 }
 
 template <typename T>
-T checkNoTrace(MsgId msgid, StatusWith<T> sw, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T checkNoTrace(MsgId msgid,
+                         StatusWith<T> sw,
+                         SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!sw.isOK())) {
         failedNoTrace(msgid, sw.getStatus(), loc);
     }
@@ -534,16 +551,16 @@ MONGO_COMPILER_NORETURN void uassertedWithLocation(const Status& status,
 #define uassertStatusOK(...) \
     ::mongo::uassertStatusOKWithLocation(__VA_ARGS__, MONGO_SOURCE_LOCATION())
 
-inline void uassertStatusOKWithLocation(const Status& status,
-                                        SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void uassertStatusOKWithLocation(const Status& status,
+                                           SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         uassertedWithLocation(status, loc);
     }
 }
 
 template <typename T>
-inline T uassertStatusOKWithLocation(StatusWith<T> sw,
-                                     SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T uassertStatusOKWithLocation(StatusWith<T> sw,
+                                        SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     uassertStatusOKWithLocation(sw.getStatus(), loc);
     return std::move(sw.getValue());
 }
@@ -558,18 +575,18 @@ inline T uassertStatusOKWithLocation(StatusWith<T> sw,
         status, [&]() -> std::string { return (contextExpr); }, MONGO_SOURCE_LOCATION())
 
 template <typename ContextExpr>
-void uassertStatusOKWithContextAndLocation(const Status& status,
-                                           ContextExpr&& contextExpr,
-                                           SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void uassertStatusOKWithContextAndLocation(const Status& status,
+                                                     ContextExpr&& contextExpr,
+                                                     SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         uassertedWithLocation(status.withContext(std::forward<ContextExpr>(contextExpr)()), loc);
     }
 }
 
 template <typename T, typename ContextExpr>
-inline T uassertStatusOKWithContextAndLocation(StatusWith<T> sw,
-                                               ContextExpr&& contextExpr,
-                                               SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T uassertStatusOKWithContextAndLocation(StatusWith<T> sw,
+                                                  ContextExpr&& contextExpr,
+                                                  SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     uassertStatusOKWithContextAndLocation(
         sw.getStatus(), std::forward<ContextExpr>(contextExpr), loc);
     return std::move(sw.getValue());
@@ -589,11 +606,18 @@ MONGO_COMPILER_NORETURN void msgassertedWithLocation(const Status& status,
 #define massertStatusOK(...) \
     ::mongo::massertStatusOKWithLocation(__VA_ARGS__, MONGO_SOURCE_LOCATION())
 
-inline void massertStatusOKWithLocation(const Status& status,
-                                        SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void massertStatusOKWithLocation(const Status& status,
+                                           SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         msgassertedWithLocation(status, loc);
     }
+}
+
+template <typename T>
+constexpr T massertStatusOKWithLocation(StatusWith<T> sw,
+                                        SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+    massertStatusOKWithLocation(sw.getStatus(), loc);
+    return std::move(sw.getValue());
 }
 
 #define MONGO_BASE_ASSERT_VA_4(fail_func, code, msg, cond)      \
@@ -661,18 +685,18 @@ void warnIfTripwireAssertionsOccurred();
         }                                                                 \
     } while (false)
 
-inline void invariantWithLocation(const Status& status,
-                                  const char* expr,
-                                  SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void invariantWithLocation(const Status& status,
+                                     const char* expr,
+                                     SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         ::mongo::invariantOKFailed(expr, status, loc);
     }
 }
 
 template <typename T>
-inline T invariantWithLocation(StatusWith<T> sw,
-                               const char* expr,
-                               SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T invariantWithLocation(StatusWith<T> sw,
+                                  const char* expr,
+                                  SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!sw.isOK())) {
         ::mongo::invariantOKFailed(expr, sw.getStatus(), loc);
     }
@@ -680,10 +704,10 @@ inline T invariantWithLocation(StatusWith<T> sw,
 }
 
 template <typename ContextExpr>
-inline void invariantWithContextAndLocation(const Status& status,
-                                            const char* expr,
-                                            ContextExpr&& contextExpr,
-                                            SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void invariantWithContextAndLocation(const Status& status,
+                                               const char* expr,
+                                               ContextExpr&& contextExpr,
+                                               SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         ::mongo::invariantOKFailedWithMsg(
             expr, status, std::forward<ContextExpr>(contextExpr)(), loc);
@@ -691,10 +715,10 @@ inline void invariantWithContextAndLocation(const Status& status,
 }
 
 template <typename T, typename ContextExpr>
-inline T invariantWithContextAndLocation(StatusWith<T> sw,
-                                         const char* expr,
-                                         ContextExpr&& contextExpr,
-                                         SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T invariantWithContextAndLocation(StatusWith<T> sw,
+                                            const char* expr,
+                                            ContextExpr&& contextExpr,
+                                            SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!sw.isOK())) {
         ::mongo::invariantOKFailedWithMsg(expr, sw.getStatus(), contextExpr(), loc);
     }
@@ -709,16 +733,16 @@ MONGO_COMPILER_NORETURN void invariantStatusOKFailed(
  */
 #define invariantStatusOK(...) \
     ::mongo::invariantStatusOKWithLocation(__VA_ARGS__, MONGO_SOURCE_LOCATION())
-inline void invariantStatusOKWithLocation(const Status& status,
-                                          SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void invariantStatusOKWithLocation(const Status& status,
+                                             SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         invariantStatusOKFailed(status, loc);
     }
 }
 
 template <typename T>
-inline T invariantStatusOKWithLocation(StatusWith<T> sw,
-                                       SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T invariantStatusOKWithLocation(StatusWith<T> sw,
+                                          SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     invariantStatusOKWithLocation(sw.getStatus(), loc);
     return std::move(sw.getValue());
 }
@@ -732,18 +756,17 @@ inline T invariantStatusOKWithLocation(StatusWith<T> sw,
     ::mongo::invariantStatusOKWithContextAndLocation(     \
         status, [&]() -> std::string { return (contextExpr); }, MONGO_SOURCE_LOCATION())
 template <typename ContextExpr>
-inline void invariantStatusOKWithContextAndLocation(const Status& status,
-                                                    ContextExpr&& contextExpr,
-                                                    SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr void invariantStatusOKWithContextAndLocation(
+    const Status& status, ContextExpr&& contextExpr, SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     if (MONGO_unlikely(!status.isOK())) {
         invariantStatusOKFailed(status.withContext(std::forward<ContextExpr>(contextExpr)()), loc);
     }
 }
 
 template <typename T, typename ContextExpr>
-inline T invariantStatusOKWithContextAndLocation(StatusWith<T> sw,
-                                                 ContextExpr&& contextExpr,
-                                                 SourceLocation loc = MONGO_SOURCE_LOCATION()) {
+constexpr T invariantStatusOKWithContextAndLocation(StatusWith<T> sw,
+                                                    ContextExpr&& contextExpr,
+                                                    SourceLocation loc = MONGO_SOURCE_LOCATION()) {
     invariantStatusOKWithContextAndLocation(
         sw.getStatus(), std::forward<ContextExpr>(contextExpr), loc);
     return std::move(sw.getValue());

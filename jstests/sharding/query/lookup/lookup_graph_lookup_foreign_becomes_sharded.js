@@ -4,9 +4,6 @@
  *
  * @tags: [
  *   requires_persistence,
- *   # TODO (SERVER-97257): Re-enable this test.
- *   # Test doesn't start enough mongods to have num_mongos routers
- *   embedded_router_incompatible,
  * ]
  */
 import "jstests/multiVersion/libs/multi_cluster.js";
@@ -107,21 +104,11 @@ assert.commandWorked(
 // Now run a getMore for each of the test cases. The foreign collection has become sharded mid-
 // iteration, but we can recover from this and continue execution.
 for (let testCase of testCases) {
-    // In the classic lookup, when we compile an internal $match stage for $lookup local
-    // document match against the foreign collection, we try to get a lock on the foreign
-    // collection as the MAIN collection and in the SBE lookup, we try to get a lock on both the
-    // local (MAIN) and foreign (secondary) collection. The thing is we go through different
-    // checks for the main collection and secondary namespaces. For the main collection, we
-    // check the shard version explicitly. For the secondary namespaces, we check sharding
-    // changes based on the snapshot. So, SBE lookup succeeds at getMore request.
-    //
-    // This is a similar situation as SERVER-64128 though it's not exactly same. Until SERVER-64128
-    // is resolved, the expected behavior is not exactly clear and we need to revisit this scenario
-    // after SERVER-64128 is resolved. Until then, just checks whether this scenario succeeds.
-    assert.commandWorked(
+    const getMoreCmdRes = assert.commandWorked(
         freshMongos.runCommand(
             {getMore: testCase.aggCmdRes.cursor.id, collection: testCase.aggCmd.aggregate}),
         `Expected getMore to succeed. Original command: ${tojson(testCase.aggCmd)}`);
+    assert.eq(getMoreCmdRes.cursor.nextBatch.length, 4, "Expected getMore to return 4 results");
 }
 
 // Run both test cases again. The fresh mongos knows that the foreign collection is sharded now,

@@ -34,7 +34,6 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/pipeline/document_source.h"
-#include "mongo/db/pipeline/search/document_source_list_search_indexes_gen.h"
 #include "mongo/db/query/search/search_query_view_spec_gen.h"
 
 namespace mongo {
@@ -100,7 +99,7 @@ public:
         : DocumentSource(kStageName, pExpCtx), _cmdObj(cmdObj.getOwned()) {}
 
     const char* getSourceName() const override {
-        return kStageName.rawData();
+        return kStageName.data();
     }
 
     static const Id& id;

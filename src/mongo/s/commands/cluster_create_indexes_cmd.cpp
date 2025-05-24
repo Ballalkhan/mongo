@@ -63,6 +63,7 @@
 #include "mongo/s/cluster_ddl.h"
 #include "mongo/s/collection_routing_info_targeter.h"
 #include "mongo/s/collection_uuid_mismatch.h"
+#include "mongo/s/router_role.h"
 #include "mongo/util/database_name_util.h"
 #include "mongo/util/string_map.h"
 
@@ -91,6 +92,10 @@ public:
 
     bool adminOnly() const final {
         return false;
+    }
+
+    bool supportsRawData() const final {
+        return true;
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,
@@ -143,38 +148,42 @@ public:
                 cmdToBeSent, nss, getName(), CreateIndexesCommand::kIsTimeseriesNamespaceFieldName);
         }
 
-        auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
-            opCtx,
-            targeter.getNS(),
-            routingInfo,
-            CommandHelpers::filterCommandRequestForPassthrough(
-                applyReadWriteConcern(opCtx, this, cmdToBeSent)),
-            ReadPreferenceSetting(ReadPreference::PrimaryOnly),
-            Shard::RetryPolicy::kNoRetry,
-            BSONObj() /*query*/,
-            BSONObj() /*collation*/,
-            boost::none /*letParameters*/,
-            boost::none /*runtimeConstants*/);
+        return routing_context_utils::withValidatedRoutingContext(
+            opCtx, {{targeter.getNS(), routingInfo}}, [&](RoutingContext& routingCtx) {
+                auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
+                    opCtx,
+                    targeter.getNS(),
+                    routingCtx,
+                    CommandHelpers::filterCommandRequestForPassthrough(
+                        applyReadWriteConcern(opCtx, this, cmdToBeSent)),
+                    ReadPreferenceSetting(ReadPreference::PrimaryOnly),
+                    Shard::RetryPolicy::kNoRetry,
+                    BSONObj() /*query*/,
+                    BSONObj() /*collation*/,
+                    boost::none /*letParameters*/,
+                    boost::none /*runtimeConstants*/);
 
-        std::string errmsg;
-        bool allShardsSucceeded =
-            appendRawResponses(opCtx, &errmsg, &output, shardResponses, shardResponses.size() > 1)
-                .responseOK;
+                std::string errmsg;
+                bool allShardsSucceeded =
+                    appendRawResponses(
+                        opCtx, &errmsg, &output, shardResponses, shardResponses.size() > 1)
+                        .responseOK;
 
-        // Append the single shard command result to the top-level output to ensure parity between
-        // replica-set and a single sharded cluster.
-        if (shardResponses.size() == 1 && allShardsSucceeded) {
-            CommandHelpers::filterCommandReplyForPassthrough(
-                shardResponses[0].swResponse.getValue().data, &output);
-        }
+                // Append the single shard command result to the top-level output to ensure parity
+                // between replica-set and a single sharded cluster.
+                if (shardResponses.size() == 1 && allShardsSucceeded) {
+                    CommandHelpers::filterCommandReplyForPassthrough(
+                        shardResponses[0].swResponse.getValue().data, &output);
+                }
 
-        CommandHelpers::appendSimpleCommandStatus(output, allShardsSucceeded, errmsg);
+                CommandHelpers::appendSimpleCommandStatus(output, allShardsSucceeded, errmsg);
 
-        if (allShardsSucceeded) {
-            LOGV2(5706400, "Indexes created", logAttrs(nss));
-        }
+                if (allShardsSucceeded) {
+                    LOGV2(5706400, "Indexes created", logAttrs(nss));
+                }
 
-        return allShardsSucceeded;
+                return allShardsSucceeded;
+            });
     }
 
     /**

@@ -85,6 +85,7 @@
 #include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/top.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/storage_parameters_gen.h"
@@ -552,7 +553,7 @@ Status renameCollectionAcrossDatabases(OperationContext* opCtx,
         targetDBLock.emplace(opCtx, target.dbName(), MODE_X);
     }
 
-    DatabaseShardingState::assertMatchingDbVersion(opCtx, source.dbName());
+    DatabaseShardingState::acquire(opCtx, source.dbName())->checkDbVersionOrThrow(opCtx);
 
     DisableDocumentValidation validationDisabler(opCtx);
 

@@ -180,8 +180,9 @@ std::pair<CollectionAcquisition, bool> acquireCollectionWithBucketsLookup(
         if (!acq->collectionExists() && originNssOrUUID.isNamespaceString() &&
             !originNssOrUUID.nss().isTimeseriesBucketsCollection()) {
             auto bucketsNss = originNssOrUUID.nss().makeTimeseriesBucketsNamespace();
-            auto bucketsCollExists = static_cast<bool>(
-                CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, bucketsNss));
+            auto bucketsCollExists =
+                static_cast<bool>(CollectionCatalog::get(opCtx)->establishConsistentCollection(
+                    opCtx, bucketsNss, boost::none /* readTimestamp */));
             if (bucketsCollExists) {
                 auto bucketsAcquisitionReq = CollectionAcquisitionRequest::fromOpCtx(
                     opCtx, bucketsNss, acquisitionReq.operationType);
@@ -209,11 +210,12 @@ std::pair<CollectionAcquisition, bool> acquireCollectionWithBucketsLookup(
         return {CollectionAcquisition(std::move(*acq)), false};
     }
 
-    uasserted(ErrorCodes::ConflictingOperationInProgress,
-              fmt::format("Exhausted rety attempts while trying to acquire collection '{}'. Number "
-                          "attempts performed {}",
-                          originNssOrUUID.toStringForErrorMsg(),
-                          kMaxAcquisitionRetryAttempts));
+    uasserted(
+        ErrorCodes::ConflictingOperationInProgress,
+        fmt::format("Exhausted retry attempts while trying to acquire collection '{}'. Number "
+                    "attempts performed {}",
+                    originNssOrUUID.toStringForErrorMsg(),
+                    kMaxAcquisitionRetryAttempts));
 }
 
 }  // namespace timeseries

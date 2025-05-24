@@ -27,16 +27,18 @@
  *    it in the license file.
  */
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 #include "mongo/db/admission/execution_control_init.h"
 
 #include <string>
 
+#include "mongo/db/admission/execution_admission_context.h"
 #include "mongo/db/admission/execution_control_parameters_gen.h"
 #include "mongo/db/admission/throughput_probing.h"
 #include "mongo/db/admission/ticketholder_manager.h"
+#include "mongo/logv2/log.h"
 #include "mongo/util/concurrency/ticketholder.h"  // IWYU pragma: keep
+
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 namespace mongo {
 namespace admission {
@@ -77,11 +79,21 @@ void initializeExecutionControl(ServiceContext* svcCtx) {
         }
     };
 
+    auto delinquentCb =
+        [](AdmissionContext* admCtx, int64_t delta, TicketHolder::QueueStats& queueStats) {
+            static_cast<ExecutionAdmissionContext*>(admCtx)->recordDelinquentAcquisition(delta);
+            // Update aggregated metrics in QueueStats.
+            queueStats.totalDelinquentAcquisitions.fetchAndAddRelaxed(1);
+            queueStats.totalAcquisitionDelinquencyMillis.fetchAndAddRelaxed(delta);
+            queueStats.maxAcquisitionDelinquencyMillis.storeRelaxed(
+                std::max(queueStats.maxAcquisitionDelinquencyMillis.loadRelaxed(), delta));
+        };
+
     std::unique_ptr<TicketHolderManager> ticketHolderManager = makeTicketHolderManager(
         std::make_unique<TicketHolder>(
-            svcCtx, readTransactions, usingThroughputProbing, readMaxQueueDepth),
+            svcCtx, readTransactions, usingThroughputProbing, readMaxQueueDepth, delinquentCb),
         std::make_unique<TicketHolder>(
-            svcCtx, writeTransactions, usingThroughputProbing, writeMaxQueueDepth));
+            svcCtx, writeTransactions, usingThroughputProbing, writeMaxQueueDepth, delinquentCb));
 
     TicketHolderManager::use(svcCtx, std::move(ticketHolderManager));
 

@@ -71,7 +71,6 @@
 #include "mongo/db/server_parameter.h"
 #include "mongo/db/server_parameter_with_storage.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/transaction_resources.h"
 #include "mongo/executor/task_executor.h"
@@ -98,8 +97,10 @@ namespace mongo {
 
 namespace {
 
+MONGO_FAIL_POINT_DEFINE(failIndexBuildWithErrorInSecondDrain);
 MONGO_FAIL_POINT_DEFINE(hangAfterRegisteringIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangBeforeInitializingIndexBuild);
+MONGO_FAIL_POINT_DEFINE(hangIndexBuildBeforeSignalPrimaryForCommitReadiness);
 MONGO_FAIL_POINT_DEFINE(hangIndexBuildAfterSignalPrimaryForCommitReadiness);
 MONGO_FAIL_POINT_DEFINE(hangBeforeRunningIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangIndexBuildBeforeSignalingPrimaryForAbort);
@@ -282,8 +283,6 @@ IndexBuildsCoordinatorMongod::_startIndexBuild(OperationContext* opCtx,
                                                IndexBuildProtocol protocol,
                                                IndexBuildOptions indexBuildOptions,
                                                const boost::optional<ResumeIndexInfo>& resumeInfo) {
-    _waitIfNewIndexBuildsBlocked(opCtx, collectionUUID, specs, buildUUID);
-
     const NamespaceStringOrUUID nssOrUuid{dbName, collectionUUID};
 
     auto writeBlockState = GlobalUserWriteBlockState::get(opCtx);
@@ -479,14 +478,6 @@ IndexBuildsCoordinatorMongod::_startIndexBuild(OperationContext* opCtx,
 
         while (MONGO_unlikely(hangBeforeInitializingIndexBuild.shouldFail())) {
             sleepmillis(100);
-        }
-
-        // Start collecting metrics for the index build. The metrics for this operation will
-        // only be aggregated globally if the node commits or aborts while it is primary.
-        auto& metricsCollector = ResourceConsumption::MetricsCollector::get(opCtx.get());
-        if (ResourceConsumption::shouldCollectMetricsForDatabase(dbName) &&
-            ResourceConsumption::isMetricsCollectionEnabled()) {
-            metricsCollector.beginScopedCollecting(opCtx.get(), dbName);
         }
 
         if (indexBuildOptions.applicationMode != ApplicationMode::kStartupRepair) {
@@ -799,6 +790,11 @@ void IndexBuildsCoordinatorMongod::_signalPrimaryForAbortAndWaitForExternalAbort
 
 void IndexBuildsCoordinatorMongod::_signalPrimaryForCommitReadiness(
     OperationContext* opCtx, std::shared_ptr<ReplIndexBuildState> replState) {
+    if (MONGO_unlikely(hangIndexBuildBeforeSignalPrimaryForCommitReadiness.shouldFail())) {
+        LOGV2(10528500, "Hanging index build after signaling the primary for commit readiness");
+        hangIndexBuildBeforeSignalPrimaryForCommitReadiness.pauseWhileSet(opCtx);
+    }
+
     // Before voting see if we are eligible to skip voting and signal
     // to commit index build if the node is primary.
     if (_signalIfCommitQuorumNotEnabled(opCtx, replState)) {
@@ -866,7 +862,7 @@ IndexBuildAction IndexBuildsCoordinatorMongod::_drainSideWritesUntilNextActionIs
         try {
             nextAction =
                 opCtx->runWithDeadline(deadline, timeoutError, [&] { return future.get(opCtx); });
-        } catch (const ExceptionForCat<ErrorCategory::ExceededTimeLimitError>& e) {
+        } catch (const ExceptionFor<ErrorCategory::ExceededTimeLimitError>& e) {
             if (e.code() == timeoutError) {
                 return false;
             }
@@ -881,6 +877,8 @@ IndexBuildAction IndexBuildsCoordinatorMongod::_drainSideWritesUntilNextActionIs
     while (!waitUntilNextActionIsReady()) {
         _insertKeysFromSideTablesWithoutBlockingWrites(opCtx, replState);
     }
+    // Final chance to catch up before taking an X lock.
+    _insertKeysFromSideTablesWithoutBlockingWrites(opCtx, replState);
     return nextAction;
 }
 
@@ -891,6 +889,15 @@ void IndexBuildsCoordinatorMongod::_waitForNextIndexBuildActionAndCommit(
     LOGV2(3856203,
           "Index build: waiting for next action before completing final phase",
           "buildUUID"_attr = replState->buildUUID);
+
+    failIndexBuildWithErrorInSecondDrain.executeIf(
+        [](const BSONObj& data) {
+            uasserted(data["error"].safeNumberInt(),
+                      "failIndexBuildWithErrorInSecondDrain failpoint triggered");
+        },
+        [&](const BSONObj& data) {
+            return UUID::parse(data["buildUUID"]) == replState->buildUUID;
+        });
 
     while (true) {
         // Future wait should hold no locks.

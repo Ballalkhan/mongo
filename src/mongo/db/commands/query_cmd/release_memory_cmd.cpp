@@ -29,10 +29,12 @@
 
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/query_cmd/acquire_locks.h"
+#include "mongo/db/memory_tracking/operation_memory_usage_tracker.h"
 #include "mongo/db/query/client_cursor/cursor_manager.h"
 #include "mongo/db/query/client_cursor/release_memory_gen.h"
 #include "mongo/db/query/client_cursor/release_memory_util.h"
 #include "mongo/db/query/plan_executor.h"
+#include "mongo/db/query/plan_yield_policy_release_memory.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
 
@@ -89,8 +91,12 @@ public:
             };
 
             for (CursorId cursorId : request().getCommandParameter()) {
-                auto cursorPin = CursorManager::get(opCtx)->pinCursor(opCtx, cursorId);
+                auto cursorPin =
+                    CursorManager::get(opCtx)->pinCursor(opCtx, cursorId, definition()->getName());
                 if (cursorPin.isOK()) {
+                    OperationMemoryUsageTracker::moveToOpCtxIfAvailable(
+                        cursorPin.getValue().getCursor(), opCtx);
+
                     if (MONGO_unlikely(releaseMemoryHangAfterPinCursor.shouldFail())) {
                         LOGV2(9745500,
                               "releaseMemoryHangAfterPinCursor fail point enabled. Blocking until "
@@ -122,6 +128,9 @@ public:
                     if (response.isOK()) {
                         response = acquireLocksAndReleaseMemory(opCtx, cursorPin.getValue());
                     }
+
+                    OperationMemoryUsageTracker::moveToCursorIfAvailable(
+                        opCtx, cursorPin.getValue().getCursor());
                     if (response.isOK()) {
                         released.push_back(cursorId);
                     } else {
@@ -182,9 +191,21 @@ public:
                 }
 
                 PlanExecutor* exec = cursorPin->getExecutor();
+
+                std::unique_ptr<PlanYieldPolicy> yieldPolicy = nullptr;
+                if (cursorPin->getExecutor()->lockPolicy() ==
+                    PlanExecutor::LockPolicy::kLockExternally) {
+                    yieldPolicy =
+                        PlanYieldPolicyReleaseMemory::make(opCtx,
+                                                           PlanYieldPolicy::YieldPolicy::YIELD_AUTO,
+                                                           locks.readLock,
+                                                           exec->nss());
+                }
+
                 exec->reattachToOperationContext(opCtx);
                 ScopeGuard opCtxGuard([&]() { exec->detachFromOperationContext(); });
-                exec->forceSpill();
+                exec->forceSpill(yieldPolicy.get());
+
                 return Status::OK();
             } catch (const DBException& e) {
                 return e.toStatus();

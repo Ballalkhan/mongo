@@ -52,6 +52,7 @@
 #include "mongo/db/s/shard_server_op_observer.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
 #include "mongo/db/s/sharding_mongod_test_fixture.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/shard_id.h"
@@ -61,7 +62,6 @@
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/config_server_catalog_cache_loader_impl.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/net/hostandport.h"
@@ -85,8 +85,13 @@ protected:
 
                     auto loader = std::make_shared<ShardServerCatalogCacheLoaderImpl>(
                         std::make_unique<ConfigServerCatalogCacheLoaderImpl>());
-                    auto catalogCache =
-                        std::make_unique<CatalogCache>(opCtx->getServiceContext(), loader);
+                    auto catalogCache = std::make_unique<CatalogCache>(
+                        opCtx->getServiceContext(),
+                        std::make_unique<ConfigServerCatalogCacheLoaderImpl>(),
+                        loader,
+                        true /* cascadeDatabaseCacheLoaderShutdown */,
+                        false /* cascadeCollectionCacheLoaderShutdown */);
+
                     uassertStatusOK(initializeGlobalShardingStateForMongodForTest(
                         configConnStr, std::move(catalogCache), std::move(loader)));
 

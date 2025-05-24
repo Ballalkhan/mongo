@@ -57,6 +57,7 @@
 #include "mongo/db/cluster_role.h"
 #include "mongo/db/cluster_transaction_api.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/notify_sharding_event_gen.h"
 #include "mongo/db/concurrency/lock_manager_defs.h"
 #include "mongo/db/database_name.h"
 #include "mongo/db/dbdirectclient.h"
@@ -66,11 +67,13 @@
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/write_ops/write_ops_gen.h"
 #include "mongo/db/query/write_ops/write_ops_parsers.h"
+#include "mongo/db/repl/change_stream_oplog_notification.h"
 #include "mongo/db/repl/read_concern_level.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/config/initial_split_policy.h"
 #include "mongo/db/s/remove_tags_gen.h"
 #include "mongo/db/s/sharding_logging.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session/logical_session_id.h"
@@ -117,43 +120,6 @@
 
 namespace mongo {
 
-static const size_t kSerializedErrorStatusMaxSizeBytes = 2048ULL;
-
-void sharding_ddl_util_serializeErrorStatusToBSON(const Status& status,
-                                                  StringData fieldName,
-                                                  BSONObjBuilder* bsonBuilder) {
-    uassert(7418500, "Status must be an error", !status.isOK());
-
-    BSONObjBuilder tmpBuilder;
-    status.serialize(&tmpBuilder);
-
-    if (status != ErrorCodes::TruncatedSerialization &&
-        (size_t)tmpBuilder.asTempObj().objsize() > kSerializedErrorStatusMaxSizeBytes) {
-        const auto statusStr = status.toString();
-        const auto truncatedStatusStr =
-            str::UTF8SafeTruncation(statusStr, kSerializedErrorStatusMaxSizeBytes);
-        const Status truncatedStatus{ErrorCodes::TruncatedSerialization, truncatedStatusStr};
-
-        tmpBuilder.resetToEmpty();
-        truncatedStatus.serializeErrorToBSON(&tmpBuilder);
-    }
-
-    bsonBuilder->append(fieldName, tmpBuilder.obj());
-}
-
-Status sharding_ddl_util_deserializeErrorStatusFromBSON(const BSONElement& bsonElem) {
-    const auto& bsonObj = bsonElem.Obj();
-
-    long long code;
-    uassertStatusOK(bsonExtractIntegerField(bsonObj, "code", &code));
-    uassert(7418501, "Status must be an error", code != ErrorCodes::OK);
-
-    std::string errmsg;
-    uassertStatusOK(bsonExtractStringField(bsonObj, "errmsg", &errmsg));
-
-    return {ErrorCodes::Error(code), errmsg, bsonObj};
-}
-
 namespace sharding_ddl_util {
 namespace {
 
@@ -194,15 +160,9 @@ void deleteCollection(OperationContext* opCtx,
                       const UUID& uuid,
                       const WriteConcernOptions& writeConcern,
                       const OperationSessionInfo& osi,
-                      const std::shared_ptr<executor::TaskExecutor>& executor) {
-    /* Perform a transaction to delete the collection and append a new placement entry.
-     * NOTE: deleteCollectionFn may be run on a separate thread than the one serving
-     * deleteCollection(). For this reason, all the referenced parameters have to
-     * be captured by value.
-     * TODO SERVER-75189: replace capture list with a single '&'.
-     */
-    auto transactionChain = [nss, uuid](const txn_api::TransactionClient& txnClient,
-                                        ExecutorPtr txnExec) {
+                      const std::shared_ptr<executor::TaskExecutor>& executor,
+                      bool logCommitOnConfigPlacementHistory) {
+    auto transactionChain = [&](const txn_api::TransactionClient& txnClient, ExecutorPtr txnExec) {
         // Remove config.collection entry. Query by 'ns' AND 'uuid' so that the remove can be
         // resolved with an IXSCAN (thanks to the index on '_id') and is idempotent (thanks to the
         // 'uuid')
@@ -227,7 +187,7 @@ void deleteCollection(OperationContext* opCtx,
                 // Skip the insertion of the placement entry if the previous statement didn't
                 // remove any document - we can deduce that the whole transaction was already
                 // committed in a previous attempt.
-                if (deleteCollResponse.getN() == 0) {
+                if (!logCommitOnConfigPlacementHistory || deleteCollResponse.getN() == 0) {
                     BatchedCommandResponse noOpResponse;
                     noOpResponse.setStatus(Status::OK());
                     noOpResponse.setN(0);
@@ -333,6 +293,17 @@ void setAllowMigrations(OperationContext* opCtx,
 
 }  // namespace
 
+Status possiblyTruncateErrorStatus(const Status& status) {
+    static const size_t kMaxSerializedStatusSize = 2048ULL;
+    auto possiblyTruncatedStatus = status;
+    if (const std::string statusStr = possiblyTruncatedStatus.toString();
+        statusStr.size() > kMaxSerializedStatusSize) {
+        possiblyTruncatedStatus = {ErrorCodes::TruncatedSerialization,
+                                   str::UTF8SafeTruncation(statusStr, kMaxSerializedStatusSize)};
+    }
+    return possiblyTruncatedStatus;
+}
+
 void linearizeCSRSReads(OperationContext* opCtx) {
     // Take advantage of ShardingLogging to perform a write to the configsvr with majority read
     // concern to guarantee that any read after this method sees any write performed by the previous
@@ -424,14 +395,14 @@ void removeQueryAnalyzerMetadata(OperationContext* opCtx,
                                str::stream() << "Failed to remove query analyzer documents");
 }
 
-void removeCollAndChunksMetadataFromConfig(
-    OperationContext* opCtx,
-    const std::shared_ptr<Shard>& configShard,
-    ShardingCatalogClient* catalogClient,
-    const CollectionType& coll,
-    const WriteConcernOptions& writeConcern,
-    const OperationSessionInfo& osi,
-    const std::shared_ptr<executor::TaskExecutor>& executor) {
+void removeCollAndChunksMetadataFromConfig(OperationContext* opCtx,
+                                           const std::shared_ptr<Shard>& configShard,
+                                           ShardingCatalogClient* catalogClient,
+                                           const CollectionType& coll,
+                                           const WriteConcernOptions& writeConcern,
+                                           const OperationSessionInfo& osi,
+                                           const std::shared_ptr<executor::TaskExecutor>& executor,
+                                           bool logCommitOnConfigPlacementHistory) {
     IgnoreAPIParametersBlock ignoreApiParametersBlock(opCtx);
     const auto& nss = coll.getNss();
     const auto& uuid = coll.getUuid();
@@ -444,7 +415,8 @@ void removeCollAndChunksMetadataFromConfig(
     config.placementHistory. In case this operation is run by a ddl coordinator, we can re-use the
     osi in the transaction to guarantee the replay protection.
     */
-    deleteCollection(opCtx, nss, uuid, writeConcern, osi, executor);
+    deleteCollection(
+        opCtx, nss, uuid, writeConcern, osi, executor, logCommitOnConfigPlacementHistory);
 
     deleteChunks(opCtx, configShard, uuid, writeConcern);
 
@@ -924,6 +896,60 @@ AuthoritativeMetadataAccessLevelEnum getGrantedAuthoritativeMetadataAccessLevel(
 
     return AuthoritativeMetadataAccessLevelEnum::kWritesAndReadsAllowed;
 }
+
+boost::optional<ShardId> pickDataBearingShard(OperationContext* opCtx, const UUID& collUuid) {
+    const Timestamp dummyTimestamp;
+    const OID dummyEpoch;
+    auto chunks = uassertStatusOK(Grid::get(opCtx)->catalogClient()->getChunks(
+        opCtx,
+        BSON(ChunkType::collectionUUID() << collUuid) /*query*/,
+        BSON(ChunkType::min() << 1) /*sort*/,
+        1 /*limit*/,
+        nullptr /*opTime*/,
+        dummyEpoch,
+        dummyTimestamp,
+        repl::ReadConcernLevelEnum::kMajorityReadConcern));
+    return chunks.empty() ? boost::none : boost::optional<ShardId>(chunks[0].getShard());
+}
+
+void generatePlacementChangeNotificationOnShard(
+    OperationContext* opCtx,
+    const NamespacePlacementChanged& placementChangeNotification,
+    const ShardId& shard,
+    const OperationSessionInfo& osi,
+    const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
+    const CancellationToken& token) {
+    LOGV2(10386900,
+          "Sending namespacePlacementChange notification to shard",
+          "notification"_attr = placementChangeNotification,
+          "recipientShard"_attr = shard);
+
+    if (const auto thisShardId = ShardingState::get(opCtx)->shardId(); thisShardId == shard) {
+        // The request can be resolved into a local function call.
+        notifyChangeStreamsOnNamespacePlacementChanged(opCtx, placementChangeNotification);
+        return;
+    }
+    ShardsvrNotifyShardingEventRequest request(notify_sharding_event::kNamespacePlacementChanged,
+                                               placementChangeNotification.toBSON());
+    request.setDbName(DatabaseName::kAdmin);
+
+    generic_argument_util::setMajorityWriteConcern(request);
+    generic_argument_util::setOperationSessionInfo(request, osi);
+
+    auto opts = std::make_shared<async_rpc::AsyncRPCOptions<ShardsvrNotifyShardingEventRequest>>(
+        **executor, token, std::move(request));
+
+    try {
+        sendAuthenticatedCommandToShards(opCtx, opts, {shard});
+    } catch (const ExceptionFor<ErrorCodes::UnsupportedShardingEventNotification>& e) {
+        // Swallow the error, which is expected when the recipient runs a legacy binary that does
+        // not support the kNamespacePlacementChanged notification type.
+        LOGV2_WARNING(10386901,
+                      "Skipping namespacePlacementChange notification",
+                      "error"_attr = redact(e.toStatus()));
+    }
+}
+
 
 }  // namespace sharding_ddl_util
 }  // namespace mongo

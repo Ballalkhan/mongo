@@ -33,6 +33,7 @@
 #include "mongo/db/change_stream_serverless_helpers.h"
 #include "mongo/db/exec/disk_use_options_gen.h"
 #include "mongo/db/pipeline/initialize_auto_get_helper.h"
+#include "mongo/db/pipeline/search/search_helper.h"
 #include "mongo/db/profile_settings.h"
 #include "mongo/db/query/multiple_collection_accessor.h"
 #include "mongo/db/query/query_request_helper.h"
@@ -98,6 +99,10 @@ public:
 
     const MultipleCollectionAccessor& getCollections() const override {
         return _collections;
+    }
+
+    std::shared_ptr<const CollectionCatalog> getCatalog() const override {
+        return _catalog;
     }
 
     StatusWith<ResolvedView> resolveView(
@@ -317,6 +322,10 @@ public:
         return _emptyMultipleCollectionAccessor;
     }
 
+    std::shared_ptr<const CollectionCatalog> getCatalog() const override {
+        return _catalog;
+    }
+
     StatusWith<ResolvedView> resolveView(
         OperationContext* opCtx,
         const NamespaceString& nss,
@@ -443,36 +452,6 @@ StatusWith<ResolvedNamespaceMap> AggExState::resolveInvolvedNamespaces() const {
     return resolvedNamespaces;
 }
 
-void AggExState::setView(std::unique_ptr<AggCatalogState>& aggCatalogStage,
-                         const ViewDefinition& view) {
-    // Queries on timeseries views may specify non-default collation whereas queries
-    // on all other types of views must match the default collator (the collation used
-    // to originally create that collections). Thus in the case of operations on TS
-    // views, we use the request's collation.
-    auto timeSeriesCollator =
-        view.timeseries() ? _aggReqDerivatives->request.getCollation() : boost::none;
-
-    auto resolvedView = uassertStatusOK(aggCatalogStage->resolveView(
-        _opCtx, _aggReqDerivatives->request.getNamespace(), timeSeriesCollator));
-    bool isExplain = _aggReqDerivatives->request.getExplain().get_value_or(false);
-    uassert(std::move(resolvedView),
-            "Explain of a resolved view must be executed by mongos",
-            !ShardingState::get(_opCtx)->enabled() || !isExplain);
-
-    _resolvedView = resolvedView;
-
-    // Parse the resolved view into a new AggregationRequestDerivatives object.
-    _resolvedViewRequest = resolvedView.asExpandedViewAggregation(
-        VersionContext::getDecoration(_opCtx), _aggReqDerivatives->request);
-    _resolvedViewLiteParsedPipeline = _resolvedViewRequest.value();
-    _aggReqDerivatives = std::make_unique<AggregateRequestDerivatives>(
-        _resolvedViewRequest.value(), _resolvedViewLiteParsedPipeline.value(), [this]() {
-            return _resolvedViewRequest.value().toBSON();
-        });
-
-    _executionNss = _aggReqDerivatives->request.getNamespace();
-}
-
 void AggExState::performValidationChecks() {
     auto request = getRequest();
     auto& liteParsedPipeline = _aggReqDerivatives->liteParsedPipeline;
@@ -487,45 +466,6 @@ void AggExState::performValidationChecks() {
     if (_opCtx->inMultiDocumentTransaction()) {
         liteParsedPipeline.assertSupportsMultiDocumentTransaction(isExplain);
         liteParsedPipeline.assertSupportsReadConcern(_opCtx, isExplain);
-    }
-}
-
-ScopedSetShardRole AggExState::setShardRole(const CollectionRoutingInfo& cri) {
-    const NamespaceString& underlyingNss = _resolvedView.value().getNamespace();
-
-    const auto optPlacementConflictTimestamp = [&]() {
-        auto originalShardVersion =
-            OperationShardingState::get(_opCtx).getShardVersion(getOriginalNss());
-
-        // Since for requests on timeseries namespaces the ServiceEntryPoint installs shard version
-        // on the buckets collection instead of the viewNss.
-        // TODO: SERVER-80719 Remove this.
-        if (!originalShardVersion && underlyingNss.isTimeseriesBucketsCollection()) {
-            originalShardVersion =
-                OperationShardingState::get(_opCtx).getShardVersion(underlyingNss);
-        }
-
-        return originalShardVersion ? originalShardVersion->placementConflictTime() : boost::none;
-    }();
-
-    if (cri.hasRoutingTable()) {
-        const auto myShardId = ShardingState::get(_opCtx)->shardId();
-
-        auto sv = cri.getShardVersion(myShardId);
-        if (optPlacementConflictTimestamp) {
-            sv.setPlacementConflictTime(*optPlacementConflictTimestamp);
-        }
-        return ScopedSetShardRole(
-            _opCtx, underlyingNss, sv /*shardVersion*/, boost::none /*databaseVersion*/);
-    } else {
-        auto sv = ShardVersion::UNSHARDED();
-        if (optPlacementConflictTimestamp) {
-            sv.setPlacementConflictTime(*optPlacementConflictTimestamp);
-        }
-        return ScopedSetShardRole(_opCtx,
-                                  underlyingNss,
-                                  ShardVersion::UNSHARDED() /*shardVersion*/,
-                                  cri.getDbVersion() /*databaseVersion*/);
     }
 }
 
@@ -658,10 +598,167 @@ std::unique_ptr<AggCatalogState> AggExState::createAggCatalogState() {
     return collectionState;
 }
 
+ResolvedViewAggExState::ResolvedViewAggExState(AggExState&& baseState,
+                                               std::unique_ptr<AggCatalogState>& aggCatalogStage,
+                                               const ViewDefinition& view)
+    : AggExState(std::move(baseState)),
+      _originalAggReqDerivatives(std::move(_aggReqDerivatives)),
+      _resolvedView(uassertStatusOK(aggCatalogStage->resolveView(
+          _opCtx,
+          _originalAggReqDerivatives->request.getNamespace(),
+          view.timeseries() ? _originalAggReqDerivatives->request.getCollation() : boost::none))),
+      _resolvedViewRequest(_resolvedView.asExpandedViewAggregation(
+          VersionContext::getDecoration(_opCtx), _originalAggReqDerivatives->request)),
+      _resolvedViewLiteParsedPipeline(_resolvedViewRequest) {
+    bool isExplain = _originalAggReqDerivatives->request.getExplain().get_value_or(false);
+    uassert(std::move(_resolvedView),
+            "Explain of a resolved view must be executed by mongos",
+            !ShardingState::get(_opCtx)->enabled() || !isExplain);
+
+    // Parse the resolved view into a new AggregationRequestDerivatives object.
+    _aggReqDerivatives = std::make_unique<AggregateRequestDerivatives>(
+        _resolvedViewRequest, _resolvedViewLiteParsedPipeline, [this]() {
+            return _resolvedViewRequest.toBSON();
+        });
+
+    setExecutionNss(_resolvedView.getNamespace());
+}
+
+StatusWith<std::unique_ptr<ResolvedViewAggExState>> ResolvedViewAggExState::create(
+    AggExState&& aggExState, std::unique_ptr<AggCatalogState>& aggCatalogState) {
+    invariant(aggCatalogState->lockAcquired());
+
+    // Resolve the request's collation and check that the default collation of 'view' is compatible
+    // with the operation's collation. The collation resolution and check are both skipped if the
+    // request did not specify a collation.
+    tassert(10240800, "Expected a view", aggCatalogState->getMainCollectionOrView().isView());
+    const auto& viewDefinition =
+        aggCatalogState->getMainCollectionOrView().getView().getViewDefinition();
+
+    if (!aggExState.getRequest().getCollation().get_value_or(BSONObj()).isEmpty()) {
+        auto [collatorToUse, collatorToUseMatchesDefault] = aggCatalogState->resolveCollator();
+        if (!CollatorInterface::collatorsMatch(viewDefinition.defaultCollator(),
+                                               collatorToUse.get()) &&
+            !viewDefinition.timeseries()) {
+            return {ErrorCodes::OptionNotSupportedOnView,
+                    "Cannot override a view's default collation"};
+        }
+    }
+
+    // Create the ResolvedViewAggExState object which will resolve the view upon
+    // initialization.
+    return std::make_unique<ResolvedViewAggExState>(
+        std::move(aggExState), aggCatalogState, viewDefinition);
+}
+
+std::unique_ptr<Pipeline, PipelineDeleter> ResolvedViewAggExState::handleViewHelper(
+    boost::intrusive_ptr<ExpressionContext> expCtx,
+    std::unique_ptr<Pipeline, PipelineDeleter> pipeline,
+    boost::optional<UUID> uuid) const {
+    if (getResolvedView().timeseries()) {
+        // For timeseries, there may have been rewrites done on the raw BSON pipeline
+        // during view resolution. We must parse the request's full resolved pipeline
+        // which will account for those rewrites.
+        // TODO SERVER-82101 Re-organize timeseries rewrites so timeseries can follow the
+        // same pattern here as other views
+        return Pipeline::parse(getRequest().getPipeline(), expCtx);
+    } else if (search_helpers::isMongotPipeline(pipeline.get()) &&
+               expCtx->isFeatureFlagMongotIndexedViewsEnabled()) {
+        // For search queries on views don't do any of the pipeline stitching that is done for
+        // normal views.
+        return pipeline;
+    }
+
+    // Parse the view pipeline, then stitch the user pipeline and view pipeline together
+    // to build the total aggregation pipeline.
+    auto userPipeline = std::move(pipeline);
+    pipeline = Pipeline::parse(getResolvedView().getPipeline(), expCtx);
+    pipeline->appendPipeline(std::move(userPipeline));
+    return pipeline;
+}
+
+ScopedSetShardRole ResolvedViewAggExState::setShardRole(const CollectionRoutingInfo& cri) {
+    const NamespaceString& underlyingNss = _resolvedView.getNamespace();
+
+    const auto optPlacementConflictTimestamp = [&]() {
+        auto originalShardVersion =
+            OperationShardingState::get(_opCtx).getShardVersion(getOriginalNss());
+
+        // Since for requests on timeseries namespaces the ServiceEntryPoint installs shard
+        // version
+        // on the buckets collection instead of the viewNss.
+        // TODO: SERVER-80719 Remove this.
+        if (!originalShardVersion && underlyingNss.isTimeseriesBucketsCollection()) {
+            originalShardVersion =
+                OperationShardingState::get(_opCtx).getShardVersion(underlyingNss);
+        }
+
+        return originalShardVersion ? originalShardVersion->placementConflictTime() : boost::none;
+    }();
+
+    if (cri.hasRoutingTable()) {
+        const auto myShardId = ShardingState::get(_opCtx)->shardId();
+
+        auto sv = cri.getShardVersion(myShardId);
+        if (optPlacementConflictTimestamp) {
+            sv.setPlacementConflictTime(*optPlacementConflictTimestamp);
+        }
+        return ScopedSetShardRole(
+            _opCtx, underlyingNss, sv /*shardVersion*/, boost::none /*databaseVersion*/);
+    } else {
+        auto sv = ShardVersion::UNSHARDED();
+        if (optPlacementConflictTimestamp) {
+            sv.setPlacementConflictTime(*optPlacementConflictTimestamp);
+        }
+        return ScopedSetShardRole(_opCtx,
+                                  underlyingNss,
+                                  ShardVersion::UNSHARDED() /*shardVersion*/,
+                                  cri.getDbVersion() /*databaseVersion*/);
+    }
+}
+
+bool AggCatalogState::requiresExtendedRangeSupportForTimeseries(
+    const ResolvedNamespaceMap& resolvedNamespaces) const {
+    auto requiresExtendedRange = false;
+
+    // Check the in-memory collections.
+    getCollections().forEach([&](const CollectionPtr& coll) {
+        if (coll->getRequiresTimeseriesExtendedRangeSupport()) {
+            requiresExtendedRange = true;
+        }
+    });
+
+    // It's possible that an involved nss that resolves to a timeseries buckets collection requires
+    // extended range support (e.g. in the foreign coll of a $lookup), so we check for that as well.
+    if (!requiresExtendedRange) {
+        for (auto& [_, resolvedNs] : resolvedNamespaces) {
+            const auto& nss = resolvedNs.ns;
+            if (nss.isTimeseriesBucketsCollection()) {
+                auto readTimestamp = shard_role_details::getRecoveryUnit(_aggExState.getOpCtx())
+                                         ->getPointInTimeReadTimestamp();
+                auto collPtr = CollectionPtr(getCatalog()->establishConsistentCollection(
+                    _aggExState.getOpCtx(), NamespaceStringOrUUID(nss), readTimestamp));
+                if (collPtr && collPtr->getRequiresTimeseriesExtendedRangeSupport()) {
+                    requiresExtendedRange = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    return requiresExtendedRange;
+}
+
 boost::intrusive_ptr<ExpressionContext> AggCatalogState::createExpressionContext() {
     auto [collator, collationMatchesDefault] = resolveCollator();
     const bool canPipelineBeRejected =
         query_settings::canPipelineBeRejected(_aggExState.getRequest().getPipeline());
+
+    // If any involved collection contains extended-range data, set a flag which individual
+    // DocumentSource parsers can check.
+    const auto& resolvedNamespaces = uassertStatusOK(_aggExState.resolveInvolvedNamespaces());
+    auto requiresExtendedRange = requiresExtendedRangeSupportForTimeseries(resolvedNamespaces);
+
     auto expCtx = ExpressionContextBuilder{}
                       .fromRequest(_aggExState.getOpCtx(),
                                    _aggExState.getRequest(),
@@ -672,19 +769,13 @@ boost::intrusive_ptr<ExpressionContext> AggCatalogState::createExpressionContext
                       .mayDbProfile(CurOp::get(_aggExState.getOpCtx())->dbProfileLevel() > 0)
                       .ns(_aggExState.hasChangeStream() ? _aggExState.getOriginalNss()
                                                         : _aggExState.getExecutionNss())
-                      .resolvedNamespace(uassertStatusOK(_aggExState.resolveInvolvedNamespaces()))
+                      .resolvedNamespace(std::move(resolvedNamespaces))
+                      .requiresTimeseriesExtendedRangeSupport(requiresExtendedRange)
                       .tmpDir(storageGlobalParams.dbpath + "/_tmp")
                       .collationMatchesDefault(collationMatchesDefault)
                       .canBeRejected(canPipelineBeRejected)
                       .explain(_aggExState.getVerbosity())
                       .build();
-
-    // If any involved collection contains extended-range data, set a flag which individual
-    // DocumentSource parsers can check.
-    getCollections().forEach([&](const CollectionPtr& coll) {
-        if (coll->getRequiresTimeseriesExtendedRangeSupport())
-            expCtx->setRequiresTimeseriesExtendedRangeSupport(true);
-    });
 
     // If the pipeline contains $exchange, set a flag so the individual
     // DocumentSources can check. Pipelines containing $exchange are incompatible with reporting
@@ -726,8 +817,8 @@ void AggCatalogState::validate() const {
  * classified as a view).
  */
 query_shape::CollectionType AggCatalogState::determineCollectionType() const {
-    if (_aggExState.getResolvedView().has_value()) {
-        if (_aggExState.getResolvedView()->timeseries()) {
+    if (_aggExState.isView()) {
+        if (_aggExState.isTimeseries()) {
             return query_shape::CollectionType::kTimeseries;
         }
         return query_shape::CollectionType::kView;

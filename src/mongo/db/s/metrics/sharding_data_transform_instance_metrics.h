@@ -42,6 +42,7 @@
 #include "mongo/db/s/metrics/sharding_data_transform_cumulative_metrics.h"
 #include "mongo/db/s/metrics/sharding_data_transform_metrics.h"
 #include "mongo/db/s/metrics/sharding_data_transform_metrics_observer_interface.h"
+#include "mongo/db/s/resharding/resharding_cumulative_metrics.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/duration.h"
@@ -112,6 +113,33 @@ public:
 
     void setLastOpEndingChunkImbalance(int64_t imbalanceCount);
 
+    ReshardingCumulativeMetrics::AnyState getState() const {
+        return _state.load();
+    }
+
+    template <typename T>
+    void onStateTransition(T before, boost::none_t after) {
+        getTypedCumulativeMetrics()->template onStateTransition<T>(before, boost::none);
+    }
+
+    template <typename T>
+    void onStateTransition(boost::none_t before, T after) {
+        setState(after);
+        getTypedCumulativeMetrics()->template onStateTransition<T>(boost::none, after);
+    }
+
+    template <typename T>
+    void onStateTransition(T before, T after) {
+        setState(after);
+        getTypedCumulativeMetrics()->template onStateTransition<T>(before, after);
+    }
+
+    void onInsertApplied();
+    void onUpdateApplied();
+    void onDeleteApplied();
+    void onOplogEntriesFetched(int64_t numEntries);
+    void onOplogEntriesApplied(int64_t numEntries);
+
 protected:
     static constexpr auto kNoDate = Date_t::min();
     using UniqueScopedObserver = ShardingDataTransformCumulativeMetrics::UniqueScopedObserver;
@@ -130,6 +158,13 @@ protected:
         }
         return duration_cast<T>(end - start);
     }
+
+    template <typename T>
+    void setState(T state) {
+        static_assert(std::is_assignable_v<ReshardingCumulativeMetrics::AnyState, T>);
+        _state.store(state);
+    }
+
     void restoreDocumentsProcessed(int64_t documentCount, int64_t totalDocumentsSizeBytes);
     void restoreWritesToStashCollections(int64_t writesToStashCollections);
     virtual std::string createOperationDescription() const;
@@ -137,8 +172,31 @@ protected:
     virtual boost::optional<Milliseconds> getRecipientHighEstimateRemainingTimeMillis() const = 0;
 
     ShardingDataTransformCumulativeMetrics* getCumulativeMetrics();
+    ReshardingCumulativeMetrics* getTypedCumulativeMetrics();
     ClockSource* getClockSource() const;
     UniqueScopedObserver registerInstanceMetrics();
+
+    int64_t getInsertsApplied() const;
+    int64_t getUpdatesApplied() const;
+    int64_t getDeletesApplied() const;
+    int64_t getOplogEntriesFetched() const;
+    int64_t getOplogEntriesApplied() const;
+    void restoreInsertsApplied(int64_t count);
+    void restoreUpdatesApplied(int64_t count);
+    void restoreDeletesApplied(int64_t count);
+    void restoreOplogEntriesFetched(int64_t count);
+    void restoreOplogEntriesApplied(int64_t count);
+
+    template <typename FieldNameProvider>
+    void reportOplogApplicationCountMetrics(const FieldNameProvider* names,
+                                            BSONObjBuilder* bob) const {
+
+        bob->append(names->getForOplogEntriesFetched(), getOplogEntriesFetched());
+        bob->append(names->getForOplogEntriesApplied(), getOplogEntriesApplied());
+        bob->append(names->getForInsertsApplied(), getInsertsApplied());
+        bob->append(names->getForUpdatesApplied(), getUpdatesApplied());
+        bob->append(names->getForDeletesApplied(), getDeletesApplied());
+    }
 
     const UUID _instanceId;
     const BSONObj _originalCommand;
@@ -165,6 +223,14 @@ private:
 
     AtomicWord<int64_t> _readsDuringCriticalSection;
     AtomicWord<int64_t> _writesDuringCriticalSection;
+
+    AtomicWord<ReshardingCumulativeMetrics::AnyState> _state;
+
+    AtomicWord<int64_t> _insertsApplied{0};
+    AtomicWord<int64_t> _updatesApplied{0};
+    AtomicWord<int64_t> _deletesApplied{0};
+    AtomicWord<int64_t> _oplogEntriesApplied{0};
+    AtomicWord<int64_t> _oplogEntriesFetched{0};
 };
 
 }  // namespace mongo

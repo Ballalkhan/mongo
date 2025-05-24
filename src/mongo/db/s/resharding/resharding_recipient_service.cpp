@@ -86,6 +86,7 @@
 #include "mongo/db/s/resharding/resharding_util.h"
 #include "mongo/db/s/shard_key_util.h"
 #include "mongo/db/s/sharding_recovery_service.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/shard_role.h"
 #include "mongo/db/storage/recovery_unit.h"
@@ -103,7 +104,6 @@
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/shard_version.h"
 #include "mongo/s/sharding_feature_flags_gen.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/clock_source.h"
@@ -129,6 +129,7 @@ MONGO_FAIL_POINT_DEFINE(reshardingRecipientFailsAfterTransitionToCloning);
 MONGO_FAIL_POINT_DEFINE(reshardingPauseRecipientBeforeBuildingIndex);
 MONGO_FAIL_POINT_DEFINE(reshardingPauseRecipientBeforeEnteringStrictConsistency);
 MONGO_FAIL_POINT_DEFINE(reshardingPauseRecipientBeforeTransitionToCreateCollection);
+MONGO_FAIL_POINT_DEFINE(reshardingRecipientFailInPhase);
 
 namespace {
 
@@ -1433,6 +1434,22 @@ void ReshardingRecipientService::RecipientStateMachine::_transitionState(
     // For logging purposes.
     auto oldState = _recipientCtx.getState();
     auto newState = newRecipientCtx.getState();
+
+    reshardingRecipientFailInPhase.execute([&](const BSONObj& data) {
+        auto targetPhase =
+            RecipientState_parse(IDLParserContext{"reshardingRecipientFailInPhase failpoint"},
+                                 data.getStringField("phase"));
+        if (oldState != targetPhase) {
+            return;
+        }
+        if (newState == RecipientStateEnum::kError || newState == RecipientStateEnum::kDone) {
+            // The recipient does not expect to fail transitions to kError or kDone. Doing so will
+            // lead to an fassert.
+            return;
+        }
+        auto errorMessage = data.getStringField("errorMessage");
+        uasserted(ErrorCodes::InternalError, errorMessage);
+    });
 
     // The recipient state machine enters the kError state on unrecoverable errors and so we don't
     // expect it to ever transition from kError except to kDone.

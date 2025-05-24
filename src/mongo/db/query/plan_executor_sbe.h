@@ -144,8 +144,8 @@ public:
 
     void dispose(OperationContext* opCtx) override;
 
-    void forceSpill() override {
-        _root->forceSpill();
+    void forceSpill(PlanYieldPolicy* yieldPolicy) override {
+        _root->forceSpill(yieldPolicy);
     }
 
     void stashResult(const BSONObj& obj) override;
@@ -177,13 +177,6 @@ public:
     const PlanExplainer& getPlanExplainer() const final {
         invariant(_planExplainer);
         return *_planExplainer;
-    }
-
-    void enableSaveRecoveryUnitAcrossCommandsIfSupported() override {
-        _isSaveRecoveryUnitAcrossCommandsEnabled = true;
-    }
-    bool isSaveRecoveryUnitAcrossCommandsEnabled() const override {
-        return _isSaveRecoveryUnitAcrossCommandsEnabled;
     }
 
     PlanExecutor::QueryFramework getQueryFramework() const final {
@@ -272,8 +265,6 @@ private:
     std::unique_ptr<PlanExplainer> _planExplainer;
 
     bool _isDisposed{false};
-
-    bool _isSaveRecoveryUnitAcrossCommandsEnabled = false;
 
     /**
      * For commands that return multiple cursors, this value will contain the type of cursor.

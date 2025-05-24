@@ -11,12 +11,10 @@
  * Any inconsistencies would mean that snapshot transactions do not work properly as the cycle gets
  * updated transactionally and no leftover documents in coll_aux can exist.
  *
- * TODO SERVER-90385 Enable this test in embedded router suites
  * @tags: [
  *     uses_transactions,
  *     assumes_snapshot_transactions,
  *     requires_fcv_80,
- *     temp_disabled_embedded_router_uncategorized,
  *     assumes_balancer_off,
  * ]
  * ]
@@ -59,14 +57,12 @@ export const $config = (function() {
 
                     arr = cursor.toArray();
                 } catch (e) {
-                    if (TxnUtil.isTransientTransactionError(e)) {
-                        throw e;
-                    }
-                    if (TestData.runningWithShardStepdowns) {
-                        // When running with stepdowns, we expect to sometimes see the query
-                        // killed.
-                        assert.contains(e.code, interruptedQueryErrors);
-                    } else {
+                    // When running with stepdowns or with balancer, we expect to sometimes see
+                    // the query killed.
+                    const isExpectedError =
+                        (TestData.runningWithShardStepdowns || TestData.runningWithBalancer) &&
+                        interruptedQueryErrors.includes(e.code);
+                    if (!isExpectedError) {
                         throw e;
                     }
                 }

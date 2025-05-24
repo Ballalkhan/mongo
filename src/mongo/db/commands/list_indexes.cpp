@@ -54,7 +54,6 @@
 #include "mongo/db/auth/resource_pattern.h"
 #include "mongo/db/basic_types_gen.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/catalog/list_indexes.h"
 #include "mongo/db/commands.h"
@@ -68,6 +67,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/profile_settings.h"
 #include "mongo/db/query/client_cursor/clientcursor.h"
 #include "mongo/db/query/client_cursor/cursor_manager.h"
 #include "mongo/db/query/collation/collator_interface.h"
@@ -78,9 +78,11 @@
 #include "mongo/db/record_id.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/shard_role.h"
 #include "mongo/db/storage/snapshot.h"
 #include "mongo/db/timeseries/catalog_helper.h"
 #include "mongo/db/timeseries/timeseries_index_schema_conversion_functions.h"
+#include "mongo/db/timeseries/timeseries_request_util.h"
 #include "mongo/idl/idl_parser.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/op_msg.h"
@@ -104,47 +106,53 @@ IndexSpecsWithNamespaceString getIndexSpecsWithNamespaceString(OperationContext*
                                                                const ListIndexes& cmd) {
     const auto& origNssOrUUID = cmd.getNamespaceOrUUID();
 
-    bool buildUUID = cmd.getIncludeBuildUUIDs().value_or(false);
-    bool indexBuildInfo = cmd.getIncludeIndexBuildInfo().value_or(false);
-    invariant(!(buildUUID && indexBuildInfo));
-    ListIndexesInclude additionalInclude = buildUUID ? ListIndexesInclude::BuildUUID
-        : indexBuildInfo                             ? ListIndexesInclude::IndexBuildInfo
-                                                     : ListIndexesInclude::Nothing;
+    ListIndexesInclude additionalInclude = [&] {
+        bool buildUUID = cmd.getIncludeBuildUUIDs().value_or(false);
+        bool indexBuildInfo = cmd.getIncludeIndexBuildInfo().value_or(false);
+        invariant(!(buildUUID && indexBuildInfo));
+        return buildUUID     ? ListIndexesInclude::BuildUUID
+            : indexBuildInfo ? ListIndexesInclude::IndexBuildInfo
+                             : ListIndexesInclude::Nothing;
+    }();
 
-    // Since time-series collections don't have UUIDs, we skip the time-series lookup
-    // if the target collection is specified as a UUID.
-    if (origNssOrUUID.isNamespaceString()) {
-        auto isCommandOnTimeseriesBucketNamespace =
-            cmd.getIsTimeseriesNamespace() && *cmd.getIsTimeseriesNamespace();
-        if (auto timeseriesOptions = timeseries::getTimeseriesOptions(
-                opCtx, origNssOrUUID.nss(), !isCommandOnTimeseriesBucketNamespace)) {
-            auto bucketsNss = isCommandOnTimeseriesBucketNamespace
-                ? origNssOrUUID.nss()
-                : origNssOrUUID.nss().makeTimeseriesBucketsNamespace();
-            AutoGetCollectionForReadCommandMaybeLockFree autoColl(opCtx, bucketsNss);
+    // TODO SERVER-79175: Make the instantiation of AutoStatsTracked nicer.
+    boost::optional<AutoStatsTracker> statsTracker{
+        boost::in_place_init_if,
+        origNssOrUUID.isNamespaceString(),
+        opCtx,
+        origNssOrUUID.isNamespaceString() ? origNssOrUUID.nss() : NamespaceString::kEmpty,
+        Top::LockType::ReadLocked,
+        AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
+        DatabaseProfileSettings::get(opCtx->getServiceContext())
+            .getDatabaseProfileLevel(origNssOrUUID.dbName())};
 
-            const CollectionPtr& coll = autoColl.getCollection();
-            uassert(ErrorCodes::NamespaceNotFound,
-                    str::stream() << "ns does not exist: " << bucketsNss.toStringForErrorMsg(),
-                    coll);
+    // TODO SERVER-104759: switch to normal acquireCollection once 9.0 becomes last LTS
+    auto [collAcq, _] = timeseries::acquireCollectionWithBucketsLookup(
+        opCtx,
+        CollectionAcquisitionRequest::fromOpCtx(
+            opCtx, origNssOrUUID, AcquisitionPrerequisites::OperationType::kRead),
+        LockMode::MODE_IS);
 
-            return std::make_pair(
-                timeseries::createTimeseriesIndexesFromBucketsIndexes(
-                    *timeseriesOptions,
-                    listIndexesInLock(opCtx, coll, bucketsNss, additionalInclude)),
-                bucketsNss.getTimeseriesViewNamespace());
+    uassert(ErrorCodes::NamespaceNotFound,
+            fmt::format("ns does not exist: {}", origNssOrUUID.toStringForErrorMsg()),
+            collAcq.exists());
+
+    const auto& collectionPtr = collAcq.getCollectionPtr();
+    const auto& nss = collAcq.nss();
+    auto indexList = listIndexesInLock(opCtx, collectionPtr, nss, additionalInclude);
+
+    if (collectionPtr->isTimeseriesCollection() && !timeseries::isRawDataRequest(opCtx, cmd)) {
+
+        indexList = timeseries::createTimeseriesIndexesFromBucketsIndexes(
+            *(collectionPtr->getTimeseriesOptions()), std::move(indexList));
+
+        if (!collectionPtr->isNewTimeseriesWithoutView()) {
+            // For legacy timeseries collections we need to return the view namespace
+            return std::make_pair(std::move(indexList), nss.getTimeseriesViewNamespace());
         }
     }
 
-    AutoGetCollectionForReadCommandMaybeLockFree autoColl(opCtx, origNssOrUUID);
-
-    const auto& nss = autoColl.getNss();
-    const CollectionPtr& coll = autoColl.getCollection();
-    uassert(ErrorCodes::NamespaceNotFound,
-            str::stream() << "ns does not exist: " << nss.toStringForErrorMsg(),
-            coll);
-
-    return std::make_pair(listIndexesInLock(opCtx, coll, nss, additionalInclude), nss);
+    return std::make_pair(std::move(indexList), nss);
 }
 
 /**
@@ -228,6 +236,10 @@ public:
             return true;
         }
 
+        bool supportsRawData() const final {
+            return true;
+        }
+
         NamespaceString ns() const final {
             auto nssOrUUID = request().getNamespaceOrUUID();
             if (nssOrUUID.isUUID()) {
@@ -246,8 +258,14 @@ public:
                 "Unauthorized",
                 authzSession->isAuthorizedToParseNamespaceElement(request().getNamespaceOrUUID()));
 
-            const auto nss = CollectionCatalog::get(opCtx)->resolveNamespaceStringOrUUID(
-                opCtx, cmd.getNamespaceOrUUID());
+            const auto nss = [&]() {
+                auto& nssOrUuid = cmd.getNamespaceOrUUID();
+                if (nssOrUuid.isNamespaceString()) {
+                    return nssOrUuid.nss();
+                }
+                return shard_role_nocheck::resolveNssWithoutAcquisition(
+                    opCtx, nssOrUuid.dbName(), nssOrUuid.uuid());
+            }();
 
             uassert(ErrorCodes::Unauthorized,
                     str::stream() << "Not authorized to list indexes on collection:"

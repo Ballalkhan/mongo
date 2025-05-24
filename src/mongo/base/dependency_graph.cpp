@@ -48,9 +48,9 @@
 
 namespace mongo {
 
-void DependencyGraph::addNode(std::string name,
-                              std::vector<std::string> prerequisites,
-                              std::vector<std::string> dependents,
+void DependencyGraph::addNode(const std::string& name,
+                              const std::vector<std::string>& prerequisites,
+                              const std::vector<std::string>& dependents,
                               std::unique_ptr<Payload> payload) {
     if (!payload) {
         struct DummyPayload : Payload {};
@@ -72,8 +72,8 @@ template <typename Seq>
 void strAppendJoin(std::string& out, StringData separator, const Seq& sequence) {
     StringData currSep;
     for (StringData str : sequence) {
-        out.append(currSep.rawData(), currSep.size());
-        out.append(str.rawData(), str.size());
+        out.append(currSep.data(), currSep.size());
+        out.append(str.data(), str.size());
         currSep = separator;
     }
 }

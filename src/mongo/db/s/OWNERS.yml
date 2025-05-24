@@ -75,7 +75,7 @@ filters:
   - "*collection_creation*":
     approvers:
       - 10gen/server-catalog-and-routing
-  - "database_sharding_state*":
+  - "database_sharding_*":
     approvers:
       - 10gen/server-catalog-and-routing
   - "operation_sharding_state*":
@@ -201,9 +201,6 @@ filters:
   - "*catalog_client*":
     approvers:
       - 10gen/server-catalog-and-routing
-  - "*index*catalog*":
-    approvers:
-      - 10gen/server-catalog-and-routing
   - "README.md":
     approvers:
       - 10gen/server-catalog-and-routing
@@ -284,7 +281,7 @@ filters:
   - "sharding_ready*":
     approvers:
       - 10gen/server-catalog-and-routing
-  - "sharding_state_command.cpp":
+  - "sharding_state*":
     approvers:
       - 10gen/server-catalog-and-routing
   - "sharding_statistics*":
@@ -321,5 +318,8 @@ filters:
     approvers:
       - 10gen/server-catalog-and-routing
   - "*check_can_connect_to*":
+    approvers:
+      - 10gen/server-catalog-and-routing
+  - "*complete_promotion_to_sharded_cluster*":
     approvers:
       - 10gen/server-catalog-and-routing

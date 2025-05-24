@@ -247,7 +247,7 @@ public:
      */
     virtual Status initFromExisting(OperationContext* opCtx,
                                     const std::shared_ptr<const Collection>& collection,
-                                    const DurableCatalogEntry& catalogEntry,
+                                    const durable_catalog::CatalogEntry& catalogEntry,
                                     boost::optional<Timestamp> readTimestamp) = 0;
 
     virtual bool isInitialized() const {
@@ -340,11 +340,10 @@ public:
     /**
      * Returns a non-ok Status if validator is not legal for this collection.
      */
-    virtual Validator parseValidator(OperationContext* opCtx,
-                                     const BSONObj& validator,
-                                     MatchExpressionParser::AllowedFeatureSet allowedFeatures,
-                                     boost::optional<multiversion::FeatureCompatibilityVersion>
-                                         maxFeatureCompatibilityVersion) const = 0;
+    virtual Validator parseValidator(
+        OperationContext* opCtx,
+        const BSONObj& validator,
+        MatchExpressionParser::AllowedFeatureSet allowedFeatures) const = 0;
 
     /**
      * Sets the validator for this collection.

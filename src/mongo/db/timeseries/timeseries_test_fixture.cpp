@@ -97,12 +97,13 @@ void TimeseriesTestFixture::_assertCollWithMetaField(const NamespaceString& ns,
     // Ensure that the input collection has a meta field.
     auto tsOptions = _getTimeseriesOptions(ns);
     auto metaField = tsOptions.getMetaField();
-    ASSERT(metaField);
+    invariant(metaField);
 
     // Ensure that that at least one measurement has a meta field value.
-    ASSERT(std::any_of(measurements.begin(), measurements.end(), [metaField](BSONObj measurement) {
-        return measurement.hasField(*metaField);
-    }));
+    invariant(
+        std::any_of(measurements.begin(), measurements.end(), [metaField](BSONObj measurement) {
+            return measurement.hasField(*metaField);
+        }));
 }
 
 // Ensure that the input collection doesn't have a meta field. We don't have to check the
@@ -110,7 +111,7 @@ void TimeseriesTestFixture::_assertCollWithMetaField(const NamespaceString& ns,
 void TimeseriesTestFixture::_assertCollWithoutMetaField(const NamespaceString& ns) const {
     auto tsOptions = _getTimeseriesOptions(ns);
     auto metaField = tsOptions.getMetaField();
-    ASSERT(!metaField);
+    invariant(!metaField);
 }
 
 void TimeseriesTestFixture::_assertNoMetaFieldsInCollWithMetaField(
@@ -118,10 +119,10 @@ void TimeseriesTestFixture::_assertNoMetaFieldsInCollWithMetaField(
     // Ensure that the input collection has a meta field.
     auto tsOptions = _getTimeseriesOptions(ns);
     auto metaField = tsOptions.getMetaField();
-    ASSERT(metaField);
+    invariant(metaField);
 
     // Ensure that there no measurements have meta field values.
-    ASSERT(std::none_of(measurements.begin(), measurements.end(), [](BSONObj measurement) {
+    invariant(std::none_of(measurements.begin(), measurements.end(), [](BSONObj measurement) {
         return measurement.hasField(_metaField);
     }));
 }
@@ -194,165 +195,88 @@ const CollatorInterface* TimeseriesTestFixture::_getCollator(const NamespaceStri
     return autoColl->getDefaultCollator();
 }
 
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue) const {
-    switch (type) {
-        case (Undefined):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << BSONUndefined)
-                               : BSON(_metaField << BSONUndefined);
-        case (Date): {
-            StatusWith<Date_t> date = dateFromISOString("2022-06-06T15:34:00.000Z");
-            ASSERT(date.isOK());
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << date.getValue())
-                               : BSON(_metaField << date.getValue());
-        }
-        case (MinKey):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << MINKEY)
-                               : BSON(_metaField << MINKEY);
-        case (MaxKey):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << MAXKEY)
-                               : BSON(_metaField << MAXKEY);
-        case (jstNULL):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << BSONNULL)
-                               : BSON(_metaField << BSONNULL);
-        case (EOO):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << BSONObj())
-                               : BSON(_metaField << BSONObj());
-        case (bsonTimestamp):
-            return _generateMeasurementWithMetaFieldType(type, timeValue, Timestamp(1, 2));
-        case (NumberInt):
-            return _generateMeasurementWithMetaFieldType(type, timeValue, 365);
-        case (NumberLong):
-            return _generateMeasurementWithMetaFieldType(
-                type, timeValue, static_cast<long long>(0x0123456789abcdefll));
-        case (NumberDecimal):
-            return _generateMeasurementWithMetaFieldType(type, timeValue, Decimal128("0.30"));
-        case (NumberDouble):
-            return _generateMeasurementWithMetaFieldType(type, timeValue, 1.5);
-        case (jstOID):
-            return _generateMeasurementWithMetaFieldType(
-                type, timeValue, OID("dbdbdbdbdbdbdbdbdbdbdbdb"));
-        case (Bool):
-            return _generateMeasurementWithMetaFieldType(type, timeValue, true);
-        case (BinData):
-            return _generateMeasurementWithMetaFieldType(
-                type, timeValue, BSONBinData("", 0, BinDataGeneral));
-        default:
-            return _generateMeasurementWithMetaFieldType(type, timeValue, _metaValue);
+BSONObjBuilder TimeseriesTestFixture::_generateMeasurement(
+    const boost::optional<BSONObj>& metaValue, const boost::optional<Date_t> timeValue) const {
+    BSONObjBuilder builder;
+    if (timeValue) {
+        builder.appendDate(_timeField, *timeValue);
     }
-    MONGO_UNREACHABLE;
+    if (!metaValue) {
+        return builder;
+    }
+    invariant(metaValue->hasField(_metaField));
+    invariant(metaValue->nFields() == 1);
+    builder.append((*metaValue).firstElement());
+    return builder;
 }
 
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue, const Timestamp metaValue) const {
-    invariant(type == bsonTimestamp);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue, const int metaValue) const {
-    invariant(type == NumberInt);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue, const long long metaValue) const {
-    invariant(type == NumberLong);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type,
-    const boost::optional<Date_t> timeValue,
-    const Decimal128 metaValue) const {
-    invariant(type == NumberDecimal);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue, const double metaValue) const {
-    invariant(type == NumberDouble);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue, const OID metaValue) const {
-    invariant(type == jstOID);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type, const boost::optional<Date_t> timeValue, const bool metaValue) const {
-    invariant(type == Bool);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type,
-    const boost::optional<Date_t> timeValue,
-    const BSONBinData metaValue) const {
-    invariant(type == BinData);
-    return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                       : BSON(_metaField << metaValue);
-}
-
-BSONObj TimeseriesTestFixture::_generateMeasurementWithMetaFieldType(
-    const BSONType type,
-    const boost::optional<Date_t> timeValue,
-    const StringData metaValue) const {
-    switch (type) {
-        // Cases where the metaValue will be a part of the returned measurement.
+BSONObjBuilder TimeseriesTestFixture::_generateMeasurement(
+    const boost::optional<BSONType> type, const boost::optional<Date_t> timeValue) const {
+    if (!type) {
+        BSONObjBuilder builder;
+        if (timeValue) {
+            builder.appendDate(_timeField, *timeValue);
+        }
+        return builder;
+    }
+    switch (*type) {
+        case (Undefined):
+            return _generateMeasurement(_undefinedMeta, timeValue);
+        case (MinKey):
+            return _generateMeasurement(_minKeyMeta, timeValue);
+        case (MaxKey):
+            return _generateMeasurement(_maxKeyMeta, timeValue);
+        case (jstNULL):
+            return _generateMeasurement(_nullMeta, timeValue);
+        case (EOO):
+            return _generateMeasurement(_eooMeta, timeValue);
+        case (Date):
+            return _generateMeasurement(_dateMeta, timeValue);
+        case (bsonTimestamp):
+            return _generateMeasurement(_bsonTimestampMeta, timeValue);
+        case (NumberInt):
+            return _generateMeasurement(_intMeta, timeValue);
+        case (NumberLong):
+            return _generateMeasurement(_longMeta, timeValue);
+        case (NumberDecimal):
+            return _generateMeasurement(_decimalMeta, timeValue);
+        case (NumberDouble):
+            return _generateMeasurement(_doubleMeta, timeValue);
+        case (jstOID):
+            return _generateMeasurement(_oidMeta, timeValue);
+        case (Bool):
+            return _generateMeasurement(_boolMeta, timeValue);
+        case (BinData):
+            return _generateMeasurement(_binDataMeta, timeValue);
         case (Object):
-            return (timeValue)
-                ? BSON(_timeField << *timeValue << _metaField << BSON("obj" << metaValue))
-                : BSON(_metaField << BSON("obj" << metaValue));
+            return _generateMeasurement(_objMeta, timeValue);
         case (Array):
-            return (timeValue)
-                ? BSON(_timeField << *timeValue << _metaField << BSONArray(BSON("0" << metaValue)))
-                : BSON(_metaField << BSONArray(BSON("0" << metaValue)));
+            return _generateMeasurement(_arrayMeta, timeValue);
         case (RegEx):
-            return (timeValue)
-                ? BSON(_timeField << *timeValue << _metaField << BSONRegEx(metaValue, metaValue))
-                : BSON(_metaField << BSONRegEx(metaValue, metaValue));
+            return _generateMeasurement(_regexMeta, timeValue);
         case (DBRef):
-            return (timeValue)
-                ? BSON(_timeField << *timeValue << _metaField
-                                  << BSONDBRef(metaValue, OID("dbdbdbdbdbdbdbdbdbdbdbdb")))
-                : BSON(_metaField << BSONDBRef(metaValue, OID("dbdbdbdbdbdbdbdbdbdbdbdb")));
+            return _generateMeasurement(_dbRefMeta, timeValue);
         case (Code):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << BSONCode(metaValue))
-                               : BSON(_metaField << BSONCode(metaValue));
+            return _generateMeasurement(_codeMeta, timeValue);
         case (Symbol):
-            return (timeValue)
-                ? BSON(_timeField << *timeValue << _metaField << BSONSymbol(metaValue))
-                : BSON(_metaField << BSONSymbol(metaValue));
+            return _generateMeasurement(_symbolMeta, timeValue);
         case (CodeWScope):
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField
-                                                 << BSONCodeWScope(metaValue, BSON("x" << 1)))
-                               : BSON(_metaField << BSONCodeWScope(metaValue, BSON("x" << 1)));
+            return _generateMeasurement(_codeWScopeMeta, timeValue);
         default:
-            return (timeValue) ? BSON(_timeField << *timeValue << _metaField << metaValue)
-                               : BSON(_metaField << metaValue);
+            return _generateMeasurement(_stringMeta, timeValue);
     }
     MONGO_UNREACHABLE;
 }
 
 std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverReason(
-    const MeasurementsWithRolloverReasonOptions& options) const {
+    const MeasurementsWithRolloverReasonOptions& options) {
     std::vector<BSONObj> measurements;
     const bucket_catalog::RolloverReason reason = options.reason;
     size_t numMeasurements = options.numMeasurements;
     size_t idxWithDiffMeasurement = options.idxWithDiffMeasurement;
-    boost::optional<StringData> metaValue = options.metaValue;
     Date_t timeValue = options.timeValue;
-    BSONType metaValueType = options.metaValueType;
+    const boost::optional<BSONObj>& metaValue = options.metaValue;
+    const boost::optional<BSONType> metaValueType = options.metaValueType;
 
     // We don't want to enable specifying the number of measurements for kCount, kSize, and
     // kCachePressure because these RolloverReasons depend on a specific number of measurements.
@@ -360,7 +284,8 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
               (reason == bucket_catalog::RolloverReason::kTimeForward ||
                reason == bucket_catalog::RolloverReason::kTimeBackward ||
                reason == bucket_catalog::RolloverReason::kSchemaChange ||
-               reason == bucket_catalog::RolloverReason::kNone));
+               reason == bucket_catalog::RolloverReason::kNone ||
+               reason == bucket_catalog::RolloverReason::kCount));
 
     // Besides kNone, we depend on numMeasurements > 2 so that we can make the output vector have
     // the appropriate RolloverReason.
@@ -369,7 +294,8 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
     // If the user inputs numMeasurements > gTimeseriesBucketMaxCount, we may not properly be
     // simulating the RolloverReason we want to because this measurements vector is now eligible
     // for RolloverReason::kCount.
-    invariant(numMeasurements <= static_cast<size_t>(gTimeseriesBucketMaxCount));
+    invariant(numMeasurements <= static_cast<size_t>(gTimeseriesBucketMaxCount) ||
+              reason == bucket_catalog::RolloverReason::kCount);
 
     // We should only be setting the idxWithDiffMeasurement if we have the rollover reasons
     // kTimeForward, kTimeBackward, or kSchemaChange.
@@ -378,16 +304,13 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
                reason == bucket_catalog::RolloverReason::kTimeBackward ||
                reason == bucket_catalog::RolloverReason::kSchemaChange));
 
-    // We need to ensure that the idxWithDiffMeasurement isn't the first element. Otherwise, we may
-    // not create a vector that causes the input RolloverReason.
+    // We need to ensure that 'idxWithDiffMeasurement' is within the range of [1, numMeasurements).
+    // Otherwise, we may not create a vector that leads to the input RolloverReason.
     invariant(numMeasurements == 1 ||
-              (idxWithDiffMeasurement >= 1 && idxWithDiffMeasurement <= numMeasurements));
+              (idxWithDiffMeasurement >= 1 && idxWithDiffMeasurement < numMeasurements));
 
-    // We should not be setting the metaValueType if the measurements don't have a metaValue.
-    invariant(metaValue != boost::none || metaValueType == String);
-    auto measurement = (metaValue)
-        ? _generateMeasurementWithMetaFieldType(metaValueType, timeValue, *metaValue)
-        : BSON(_timeField << timeValue);
+    auto measurement = (metaValue) ? _generateMeasurement(metaValue, timeValue).obj()
+                                   : _generateMeasurement(metaValueType, timeValue).obj();
 
     switch (reason) {
         case bucket_catalog::RolloverReason::kNone:
@@ -396,7 +319,7 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
             }
             return measurements;
         case bucket_catalog::RolloverReason::kCount:
-            for (auto i = 0; i < 2 * gTimeseriesBucketMaxCount; i++) {
+            for (size_t i = 0; i < numMeasurements; i++) {
                 measurements.emplace_back(measurement);
             }
             return measurements;
@@ -405,29 +328,30 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
                 measurements.emplace_back(measurement);
             }
             auto kTimeForwardMeasurement = (metaValue)
-                ? BSON(_timeField << timeValue + Hours(2) << _metaField << *metaValue)
-                : BSON(_timeField << timeValue + Hours(2));
+                ? _generateMeasurement(metaValue, timeValue + Hours(2)).obj()
+                : _generateMeasurement(metaValueType, timeValue + Hours(2)).obj();
             for (size_t i = idxWithDiffMeasurement; i < numMeasurements; i++) {
                 measurements.emplace_back(kTimeForwardMeasurement);
             }
             return measurements;
         }
         case bucket_catalog::RolloverReason::kSchemaChange: {
-            auto kSchemaChangeMeasurement1 = (metaValue)
-                ? BSON(_timeField << timeValue << _metaField << *metaValue << "deathGrips"
-                                  << "isOnline")
-                : BSON(_timeField << timeValue << "deathGrips"
-                                  << "isOnline");
+            auto kSchemaChangeMeasurementBuilder1 = (metaValue)
+                ? _generateMeasurement(metaValue, timeValue)
+                : _generateMeasurement(metaValueType, timeValue);
+            kSchemaChangeMeasurementBuilder1.append("deathGrips", "isOnline");
+            auto kSchemaChangeMeasurement1 = kSchemaChangeMeasurementBuilder1.obj();
             for (size_t i = 0; i < idxWithDiffMeasurement; i++) {
                 measurements.emplace_back(kSchemaChangeMeasurement1);
             }
             // We want to guarantee that this measurement with different schema is at the
             // end of the BatchedInsertContext, so we make its time greater than the rest
             // of the measurements.
-            auto kSchemaChangeMeasurement2 = (metaValue)
-                ? BSON(_timeField << timeValue + Seconds(1) << _metaField << *metaValue
-                                  << "deathGrips" << 100)
-                : BSON(_timeField << timeValue + Seconds(1) << "deathGrips" << 100);
+            auto kSchemaChangeMeasurementBuilder2 = (metaValue)
+                ? _generateMeasurement(metaValue, timeValue + Seconds(1))
+                : _generateMeasurement(metaValueType, timeValue + Seconds(1));
+            kSchemaChangeMeasurementBuilder2.appendNumber("deathGrips", 100);
+            auto kSchemaChangeMeasurement2 = kSchemaChangeMeasurementBuilder2.obj();
             for (size_t i = idxWithDiffMeasurement; i < numMeasurements; i++) {
                 measurements.emplace_back(kSchemaChangeMeasurement2);
             }
@@ -438,8 +362,8 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
                 measurements.emplace_back(measurement);
             }
             auto kTimeBackwardMeasurement = (metaValue)
-                ? BSON(_timeField << timeValue - Hours(1) << _metaField << *metaValue)
-                : BSON(_timeField << timeValue - Hours(1));
+                ? _generateMeasurement(metaValue, timeValue - Hours(1)).obj()
+                : _generateMeasurement(metaValueType, timeValue - Hours(1)).obj();
             for (size_t i = idxWithDiffMeasurement; i < numMeasurements; i++) {
                 measurements.emplace_back(kTimeBackwardMeasurement);
             }
@@ -454,20 +378,22 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
         // _storageCacheSizeBytes to determine if we want to keep the bucket open due to large
         // measurements.
         case bucket_catalog::RolloverReason::kCachePressure: {
-            auto bigMeasurement = (metaValue)
-                ? BSON(_timeField << timeValue << _metaField << *metaValue << "big_field"
-                                  << _bigStr)
-                : BSON(_timeField << timeValue << "big_field" << _bigStr);
+            auto bigMeasurementBuilder = (metaValue)
+                ? _generateMeasurement(metaValue, timeValue)
+                : _generateMeasurement(metaValueType, timeValue);
+            bigMeasurementBuilder.append("big_field", _bigStr);
+            auto bigMeasurement = bigMeasurementBuilder.obj();
             for (auto i = 0; i < 4; i++) {
                 measurements.emplace_back(bigMeasurement);
             }
             return measurements;
         }
         case bucket_catalog::RolloverReason::kSize: {
-            auto bigMeasurement = (metaValue)
-                ? BSON(_timeField << timeValue << _metaField << *metaValue << "big_field"
-                                  << _bigStr)
-                : BSON(_timeField << timeValue << "big_field" << _bigStr);
+            auto bigMeasurementBuilder = (metaValue)
+                ? _generateMeasurement(metaValue, timeValue)
+                : _generateMeasurement(metaValueType, timeValue);
+            bigMeasurementBuilder.append("big_field", _bigStr);
+            auto bigMeasurement = bigMeasurementBuilder.obj();
             for (auto i = 0; i < 125; i++) {
                 measurements.emplace_back(bigMeasurement);
             }
@@ -483,8 +409,9 @@ std::vector<BSONObj> TimeseriesTestFixture::_generateMeasurementsWithRolloverRea
 bucket_catalog::Bucket* TimeseriesTestFixture::_generateBucketWithBatch(
     const NamespaceString& ns,
     const UUID& collectionUUID,
-    bucket_catalog::BatchedInsertContext& batch) {
-    auto measurementTimestamp = std::get<Date_t>(batch.measurementsTimesAndIndices[0]);
+    bucket_catalog::BatchedInsertContext& batch,
+    size_t batchIdx) const {
+    auto measurementTimestamp = std::get<Date_t>(batch.measurementsTimesAndIndices[batchIdx]);
     return &bucket_catalog::internal::allocateBucket(*_bucketCatalog,
                                                      *_bucketCatalog->stripes[batch.stripeNumber],
                                                      WithLock::withoutLock(),
@@ -586,30 +513,30 @@ TimeseriesTestFixture::_generateBucketsWithMeasurements(
     const UUID& collectionUUID,
     const std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>&
         measurementsAndRolloverReasons) {
-    bool kNoneReasonEncountered = false;
     absl::InlinedVector<bucket_catalog::Bucket*, 8> buckets;
     auto options = _getTimeseriesOptions(ns);
 
     for (size_t i = 0; i < measurementsAndRolloverReasons.size(); i++) {
         std::vector<BSONObj> measurements = measurementsAndRolloverReasons[i].first;
         bucket_catalog::RolloverReason reason = measurementsAndRolloverReasons[i].second;
-        if (reason == bucket_catalog::RolloverReason::kNone) {
-            // We can only have one bucket be empty and have a kNone rollover action because we are
-            // creating buckets that all have the same meta field value or are in collection without
-            // a meta field.
-            ASSERT(!kNoneReasonEncountered);
-            kNoneReasonEncountered = true;
-        }
-        std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
+        // We don't enable creating buckets with kNone rollover reasons unless we are only creating
+        // one bucket, because trying to call allocateBucket in debug mode with an uncleared open
+        // bucket will invariant.
+        //
+        // We require the caller of this function to be responsible for setting/unsetting the
+        // bucket's rollover reason as it is staging/committing writes to the bucket.
+        ASSERT(measurementsAndRolloverReasons.size() == 1 ||
+               reason != bucket_catalog::RolloverReason::kNone);
+        std::vector<timeseries::bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
         auto batchedInsertContexts =
-            write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                            collectionUUID,
-                                                            options,
-                                                            measurements,
-                                                            /*startIndex=*/0,
-                                                            /*numDocsToStage=*/measurements.size(),
-                                                            /*docsToRetry=*/{},
-                                                            errorsAndIndices);
+            bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                       collectionUUID,
+                                                       options,
+                                                       measurements,
+                                                       /*startIndex=*/0,
+                                                       /*numDocsToStage=*/measurements.size(),
+                                                       /*docsToRetry=*/{},
+                                                       errorsAndIndices);
         ASSERT(errorsAndIndices.empty());
         // We should only be creating one batch and it should be able to fit in one bucket.
         ASSERT_EQ(batchedInsertContexts.size(), 1);
@@ -618,10 +545,9 @@ TimeseriesTestFixture::_generateBucketsWithMeasurements(
             numMeasurements += batchedInsertContexts[i].measurementsTimesAndIndices.size();
         }
         ASSERT_EQ(numMeasurements, measurements.size());
-        auto currentBatch = batchedInsertContexts[0];
-        bucket_catalog::Bucket* curBucket =
-            _generateBucketWithBatch(ns, collectionUUID, currentBatch);
-        _stageInsertOneBatchIntoEligibleBucketHelper(ns, collectionUUID, currentBatch, curBucket);
+        auto curBatch = batchedInsertContexts[0];
+        bucket_catalog::Bucket* curBucket = _generateBucketWithBatch(ns, collectionUUID, curBatch);
+        _stageInsertOneBatchIntoEligibleBucketHelper(ns, collectionUUID, curBatch, curBucket);
         curBucket->rolloverReason = reason;
         // Check that we have the same metadata across all the buckets we create; we know that all
         // the measurements within the same batch have the same meta field value if we didn't assert
@@ -637,6 +563,25 @@ TimeseriesTestFixture::_generateBucketsWithMeasurements(
     }
     ASSERT_EQ(measurementsAndRolloverReasons.size(), buckets.size());
     return buckets;
+}
+
+absl::InlinedVector<bucket_catalog::Bucket*, 8> TimeseriesTestFixture::_createFullBuckets(
+    const NamespaceString& ns,
+    const UUID& collectionUUID,
+    size_t numBuckets,
+    boost::optional<BSONObj> metaValue = boost::none,
+    boost::optional<BSONType> metaValueType = String) {
+    auto measurements =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kCount,
+                                                 .metaValue = metaValue,
+                                                 .metaValueType = metaValueType});
+    std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>
+        measurementsAndRolloverReasons;
+    for (size_t i = 0; i < numBuckets; i++) {
+        measurementsAndRolloverReasons.push_back(
+            std::make_pair(measurements, bucket_catalog::RolloverReason::kCount));
+    }
+    return _generateBucketsWithMeasurements(ns, collectionUUID, measurementsAndRolloverReasons);
 }
 
 uint64_t TimeseriesTestFixture::_getStorageCacheSizeBytes() const {

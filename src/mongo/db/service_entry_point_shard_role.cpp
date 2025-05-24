@@ -110,6 +110,7 @@
 #include "mongo/db/request_execution_context.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/sharding_initialization_waiter.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_statistics.h"
 #include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/server_options.h"
@@ -124,7 +125,6 @@
 #include "mongo/db/stats/api_version_metrics.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/read_preference_metrics.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/db/stats/server_read_concern_metrics.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/tenant_id.h"
@@ -157,7 +157,6 @@
 #include "mongo/s/shard_version.h"
 #include "mongo/s/sharding_cluster_parameters_gen.h"
 #include "mongo/s/sharding_feature_flags_gen.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/s/would_change_owning_shard_exception.h"
@@ -509,9 +508,6 @@ public:
             return Status::OK();
         }();
 
-        // Ensure the lifetime of `_scopedMetrics` ends here.
-        _scopedMetrics = boost::none;
-
         // Release the ingress admission ticket
         _admissionTicket = boost::none;
 
@@ -678,7 +674,6 @@ private:
     OperationSessionInfoFromClient _sessionOptions;
 
     boost::optional<RunCommandOpTimes> _runCommandOpTimes;
-    boost::optional<ResourceConsumption::ScopedMetricsCollector> _scopedMetrics;
     boost::optional<rpc::ImpersonatedClientSessionGuard> _clientSessionGuard;
     boost::optional<auth::SecurityTokenAuthenticationGuard> _tokenAuthorizationSessionGuard;
     bool _refreshedDatabase = false;
@@ -1620,12 +1615,6 @@ void ExecCommandDatabase::_initiateCommand() {
     uassert(ErrorCodes::InvalidNamespace,
             fmt::format("Invalid database name: '{}'", dbName.toStringForErrorMsg()),
             DatabaseName::isValid(dbName, DatabaseName::DollarInDbNameBehavior::Allow));
-
-
-    // Connections from mongod or mongos clients (i.e. initial sync, mirrored reads, etc.) should
-    // not contribute to resource consumption metrics.
-    const bool collect = command->collectsResourceConsumptionMetrics() && !_isInternalClient();
-    _scopedMetrics.emplace(opCtx, dbName, collect);
 
     const auto allowTransactionsOnConfigDatabase =
         (serverGlobalParams.clusterRole.has(ClusterRole::ConfigServer) ||

@@ -139,7 +139,10 @@ public:
         _pipeline->dispose(opCtx);
     }
 
-    void forceSpill() override {
+    void forceSpill(PlanYieldPolicy* yieldPolicy) override {
+        tassert(10450600,
+                "Pipelines acquire locks internally, so yieldPolicy must be nullptr",
+                yieldPolicy == nullptr);
         _pipeline->forceSpill();
     }
 
@@ -185,11 +188,6 @@ public:
     std::vector<Value> writeExplainOps(ExplainOptions::Verbosity verbosity) const {
         auto opts = SerializationOptions{.verbosity = verbosity};
         return _pipeline->writeExplainOps(opts);
-    }
-
-    void enableSaveRecoveryUnitAcrossCommandsIfSupported() override {}
-    bool isSaveRecoveryUnitAcrossCommandsEnabled() const override {
-        return false;
     }
 
     boost::optional<StringData> getExecutorType() const override {

@@ -35,6 +35,7 @@
 #include <ostream>
 
 #include "mongo/base/data_range.h"
+#include "mongo/base/string_data.h"
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
@@ -79,7 +80,7 @@ TEST(BSONElement, BinDataToString) {
     builder.appendBinData("overlongUUID", sizeof(overlongUUID), newUUID, overlongUUID);
     builder.appendBinData("zeroLength", 0, BinDataGeneral, zeroLength);
     builder.appendBinData(
-        "unknownType", unknownType.size(), unknownBinDataType, unknownType.rawData());
+        "unknownType", unknownType.size(), unknownBinDataType, unknownType.data());
 
     BSONObj obj = builder.obj();
     ASSERT_EQ(obj["bintype0"].toString(), "bintype0: BinData(0, DEEABEEF01)");
@@ -443,5 +444,35 @@ TEST(BSONElementTryCoeceToLongLongTest, CoerceFails) {
         ASSERT_NOT_OK(result) << " for input document " << testCase.toString();
     }
 }
+
+TEST(BSONElementTrustedInitTag, EOOElement) {
+    const char buffer[] = {BSONType::EOO};
+
+    BSONElement eoo(buffer, 0, BSONElement::TrustedInitTag{});
+    ASSERT_EQ(BSONType::EOO, eoo.type());
+    ASSERT_EQ(0, eoo.fieldNameSize());
+    ASSERT_EQ(""_sd, eoo.fieldNameStringData());
+}
+
+TEST(BSONElementTrustedInitTag, EmptyFieldName) {
+    const char buffer[] = {BSONType::String, '\0', 'x', '\0'};
+
+    BSONElement elem(buffer, 1, BSONElement::TrustedInitTag{});
+    ASSERT_EQ(BSONType::String, elem.type());
+    // 'fieldNameSize()' includes the NUL-terminator.
+    ASSERT_EQ(1, elem.fieldNameSize());
+    ASSERT_EQ(""_sd, elem.fieldNameStringData());
+}
+
+TEST(BSONElementTrustedInitTag, NonEmptyFieldName) {
+    const char buffer[] = {BSONType::String, 'f', 'o', 'x', 'x', '\0', 'x', '\0'};
+
+    BSONElement elem(buffer, 5, BSONElement::TrustedInitTag{});
+    ASSERT_EQ(BSONType::String, elem.type());
+    // 'fieldNameSize()' includes the NUL-terminator.
+    ASSERT_EQ(5, elem.fieldNameSize());
+    ASSERT_EQ("foxx"_sd, elem.fieldNameStringData());
+}
+
 }  // namespace
 }  // namespace mongo

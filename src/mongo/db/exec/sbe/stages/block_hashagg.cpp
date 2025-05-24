@@ -753,18 +753,11 @@ void BlockHashAggStage::open(bool reOpen) {
             spill(memoryCheckData);
         }
 
-        // Establish a cursor, positioned at the beginning of the record store.
-        _rsCursor = _recordStore->getCursor(_opCtx);
+        switchToDisk();
     }
 
     _accumulatorBitsetAccessor.reset(false, value::TypeTags::Nothing, 0);
     _htIt = _ht->end();
-
-    if (_recordStore) {
-        for (auto&& aggAccessor : _rowAggAccessors) {
-            aggAccessor->setIndex(1);
-        }
-    }
 }
 
 bool BlockHashAggStage::getNextSpilledHelper() {
@@ -872,17 +865,16 @@ PlanState BlockHashAggStage::getNext() {
     ON_BLOCK_EXIT([&]() { populateBitmapSlot(numRows); });
 
     while (numRows < kBlockOutSize) {
-        if (_htIt == _ht->end()) {
-            _htIt = _ht->begin();
-        } else {
-            ++_htIt;
-        }
+        setIteratorToNextRecord();
 
         if (_done) {
             return trackPlanState(PlanState::IS_EOF);
         }
 
         if (_htIt == _ht->end()) {
+            // All records have been processed.
+            _ht->clear();
+            _htIt = _ht->end();
             _done = true;
             if (numRows == 0) {
                 return trackPlanState(PlanState::IS_EOF);
@@ -991,7 +983,7 @@ const SpecificStats* BlockHashAggStage::getSpecificStats() const {
     return &_specificStats;
 }
 
-HashAggStats* BlockHashAggStage::getHashAggStats() {
+BlockHashAggStats* BlockHashAggStage::getHashAggStats() {
     return &_specificStats;
 }
 

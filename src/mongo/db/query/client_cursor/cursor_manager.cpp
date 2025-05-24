@@ -48,6 +48,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/cursor_in_use_info.h"
 #include "mongo/db/memory_tracking/operation_memory_usage_tracker.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
@@ -170,6 +171,10 @@ std::size_t CursorManager::timeoutCursors(OperationContext* opCtx, Date_t now) {
               "Cursor timed out",
               "cursorId"_attr = cursor->cursorid(),
               "idleSince"_attr = cursor->getLastUseDate());
+        // The memory tracker needs to be moved from the cursor to the opCtx in order for memory
+        // metrics to be reset on a valid tracker.
+        OperationMemoryUsageTracker::moveToOpCtxIfAvailable(cursor.get(), opCtx);
+
         cursor->dispose(opCtx, boost::none);
     }
     return toDisposeWithoutMutex.size();
@@ -196,6 +201,7 @@ std::vector<CursorId> CursorManager::getCursorIdsForNamespace(const NamespaceStr
 StatusWith<ClientCursorPin> CursorManager::pinCursor(
     OperationContext* opCtx,
     CursorId id,
+    StringData commandName,
     const std::function<void(const ClientCursor&)>& checkPinAllowed,
     AuthCheck checkSessionAuth) {
     auto lockedPartition = _cursorMap->lockOnePartition(id);
@@ -206,8 +212,8 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(
 
     ClientCursor* cursor = it->second;
     if (cursor->_operationUsingCursor) {
-        return {ErrorCodes::CursorInUse,
-                str::stream() << "cursor id " << id << " is already in use"};
+        return Status{CursorInUseInfo{cursor->_commandUsingCursor},
+                      str::stream() << "cursor id " << id << " is already in use"};
     }
     if (cursor->getExecutor()->isMarkedAsKilled()) {
         // This cursor was killed while it was idle.
@@ -246,6 +252,7 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(
     CurOp::get(opCtx)->debug().isChangeStreamQuery = cursor->_isChangeStreamQuery;
 
     cursor->_operationUsingCursor = opCtx;
+    cursor->_commandUsingCursor = commandName.toString();
 
     // We use pinning of a cursor as a proxy for active, user-initiated use of a cursor.  Therefore,
     // we pass down to the logical session cache and vivify the record (updating last use).
@@ -259,7 +266,6 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(
 
     LOGV2_DEBUG(8928404, 2, "Pinning cursor", "cursorId"_attr = cursor->cursorid());
     auto pin = ClientCursorPin(opCtx, cursor, this);
-    pin.unstashResourcesOntoOperationContext();
     return StatusWith(std::move(pin));
 }
 
@@ -345,7 +351,8 @@ std::vector<GenericCursor> CursorManager::getIdleCursors(
     return cursors;
 }
 
-stdx::unordered_set<CursorId> CursorManager::getCursorsForSession(LogicalSessionId lsid) const {
+stdx::unordered_set<CursorId> CursorManager::getCursorsForSession(
+    const LogicalSessionId& lsid) const {
     stdx::unordered_set<CursorId> cursors;
 
     auto allPartitions = _cursorMap->lockAllPartitions();
@@ -362,11 +369,11 @@ stdx::unordered_set<CursorId> CursorManager::getCursorsForSession(LogicalSession
 }
 
 stdx::unordered_set<CursorId> CursorManager::getCursorsForOpKeys(
-    std::vector<OperationKey> opKeys) const {
+    const std::vector<OperationKey>& opKeys) const {
     stdx::unordered_set<CursorId> cursors;
 
     stdx::lock_guard<stdx::mutex> lk(_opKeyMutex);
-    for (auto opKey : opKeys) {
+    for (auto&& opKey : opKeys) {
         if (auto it = _opKeyMap.find(opKey); it != _opKeyMap.end()) {
             for (auto cursor : it->second) {
                 cursors.insert(cursor);

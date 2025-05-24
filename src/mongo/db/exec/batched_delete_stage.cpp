@@ -45,7 +45,6 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/collection_crud/collection_write_path.h"
 #include "mongo/db/commands/server_status.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/exec/batched_delete_stage.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/plan_stage.h"
@@ -57,6 +56,7 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_executor_impl.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/snapshot.h"
 #include "mongo/db/storage/write_unit_of_work.h"
@@ -155,8 +155,7 @@ BatchedDeleteStage::BatchedDeleteStage(
     WorkingSet* ws,
     CollectionAcquisition collection,
     PlanStage* child)
-    : DeleteStage::DeleteStage(
-          kStageType.rawData(), expCtx, std::move(params), ws, collection, child),
+    : DeleteStage::DeleteStage(kStageType.data(), expCtx, std::move(params), ws, collection, child),
       _batchedDeleteParams(std::move(batchedDeleteParams)),
       _stagedDeletesBuffer(ws),
       _stagedDeletesWatermarkBytes(0),
@@ -167,14 +166,8 @@ BatchedDeleteStage::BatchedDeleteStage(
     tassert(6303800,
             "batched deletions only support multi-document deletions (multi: true)",
             _params->isMulti);
-    tassert(6303802,
-            "batched deletions do not support the 'returnDelete' parameter",
-            !_params->returnDeleted);
     tassert(
         6303803, "batched deletions do not support the 'sort' parameter", _params->sort.isEmpty());
-    tassert(6303804,
-            "batched deletions do not support the 'removeSaver' parameter",
-            _params->sort.isEmpty());
     tassert(6303805,
             "batched deletions do not support the 'numStatsForDoc' parameter",
             !_params->numStatsForDoc);

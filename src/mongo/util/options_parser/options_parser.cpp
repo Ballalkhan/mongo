@@ -34,8 +34,7 @@
 #include <boost/any.hpp>
 #include <boost/any/bad_any_cast.hpp>
 #include <boost/core/typeinfo.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/path_traits.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/iostreams/categories.hpp>
 #include <boost/iostreams/device/file_descriptor.hpp>
 #include <boost/iostreams/imbue.hpp>
@@ -578,10 +577,10 @@ std::string runYAMLRestExpansion(StringData url, Seconds timeout) {
         ErrorCodes::OperationFailed, "No HTTP Client available in this build of MongoDB", client);
 
     // Expect https:// URLs unless we can be sure we're talking to localhost.
-    if (!url.startsWith("https://")) {
+    if (!url.starts_with("https://")) {
         uassert(ErrorCodes::BadValue,
                 "__rest configuration expansion only supports http/https",
-                url.startsWith("http://"));
+                url.starts_with("http://"));
         const auto start = strlen("http://");
         auto end = url.find('/', start);
         if (end == std::string::npos) {

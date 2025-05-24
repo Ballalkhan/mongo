@@ -62,6 +62,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/db/transaction_resources.h"
@@ -338,7 +339,7 @@ Status _dropDatabase(OperationContext* opCtx,
                 // processed. Only non-replicated collections should be left to remove. Collections
                 // with the `tmp.mr` namespace may or may not be getting replicated; be conservative
                 // and assume they are not.
-                invariant(!nss.isReplicated() || nss.coll().startsWith("tmp.mr"));
+                invariant(!nss.isReplicated() || nss.coll().starts_with("tmp.mr"));
             }
 
             if (!abortIndexBuilds) {

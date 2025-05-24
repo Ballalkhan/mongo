@@ -97,7 +97,13 @@ public:
     }
 
     const char* getSourceName() const override {
-        return DocumentSourceChangeStreamUnwindTransaction::kStageName.rawData();
+        return DocumentSourceChangeStreamUnwindTransaction::kStageName.data();
+    }
+
+    static const Id& id;
+
+    Id getId() const override {
+        return id;
     }
 
 protected:

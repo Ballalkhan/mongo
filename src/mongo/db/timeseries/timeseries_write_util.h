@@ -63,22 +63,6 @@ namespace mongo::timeseries {
  */
 void assertTimeseriesBucketsCollection(const Collection* bucketsColl);
 
-
-/**
- * Returns the document for writing a new bucket with 'measurements'. Generates the id and
- * calculates the min and max fields while building the document.
- *
- * The measurements must already be known to fit in the same bucket. No checks will be done.
- */
-BSONObj makeBucketDocument(const std::vector<BSONObj>& measurements,
-                           const NamespaceString& nss,
-                           const UUID& collectionUUID,
-                           const TimeseriesOptions& options,
-                           const StringDataComparator* comparator);
-
-using TimeseriesWriteBatches = std::vector<std::shared_ptr<bucket_catalog::WriteBatch>>;
-using TimeseriesStmtIds = stdx::unordered_map<bucket_catalog::WriteBatch*, std::vector<StmtId>>;
-
 /**
  * Retrieves the opTime and electionId according to the current replication mode.
  */
@@ -87,15 +71,10 @@ void getOpTimeAndElectionId(OperationContext* opCtx,
                             boost::optional<OID>* electionId);
 
 /**
- * Sorts batches by bucket so that preparing the commit for each batch cannot deadlock.
- */
-void sortBatchesToCommit(TimeseriesWriteBatches& batches);
-
-/**
  * Prepares the final write batches needed for performing the writes to storage.
  */
 std::vector<std::reference_wrapper<std::shared_ptr<timeseries::bucket_catalog::WriteBatch>>>
-determineBatchesToCommit(TimeseriesWriteBatches& batches);
+determineBatchesToCommit(bucket_catalog::TimeseriesWriteBatches& batches);
 /**
  * Performs modifications atomically for a user command on a time-series collection.
  *

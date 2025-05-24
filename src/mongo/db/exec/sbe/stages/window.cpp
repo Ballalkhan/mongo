@@ -27,7 +27,6 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
 
 #include "mongo/db/exec/sbe/stages/window.h"
 
@@ -82,10 +81,6 @@ WindowStage::WindowStage(std::unique_ptr<PlanStage> input,
 
     _records.reserve(_batchSize);
     _recordBuffers.reserve(_batchSize);
-    _recordTimestamps.reserve(_batchSize);
-    for (size_t i = 0; i < _batchSize; i++) {
-        _recordTimestamps.push_back(Timestamp{});
-    }
 }
 
 std::unique_ptr<PlanStage> WindowStage::clone() const {
@@ -177,7 +172,7 @@ void WindowStage::spill() {
     }
 
     auto writeBatch = [&]() {
-        auto status = _recordStore->insertRecords(_opCtx, &_records, _recordTimestamps);
+        auto status = _recordStore->insertRecords(_opCtx, &_records);
         tassert(7870901, "Failed to spill records in the window stage", status.isOK());
         _records.clear();
         _recordBuffers.clear();
@@ -841,7 +836,6 @@ std::unique_ptr<PlanStageStats> WindowStage::getStats(bool includeDebugInfo) con
     ret->specific = std::make_unique<WindowStats>(_specificStats);
 
     if (includeDebugInfo) {
-        DebugPrinter printer;
         BSONObjBuilder bob;
         // Spilling stats.
         bob.appendBool("usedDisk", _specificStats.usedDisk);

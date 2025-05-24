@@ -161,7 +161,7 @@ public:
 
     Status initFromExisting(OperationContext* opCtx,
                             const std::shared_ptr<const Collection>& collection,
-                            const DurableCatalogEntry& catalogEntry,
+                            const durable_catalog::CatalogEntry& catalogEntry,
                             boost::optional<Timestamp> readTimestamp) override {
         MONGO_UNREACHABLE;
     }
@@ -244,13 +244,11 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    Validator parseValidator(OperationContext* opCtx,
-                             const BSONObj& validator,
-                             MatchExpressionParser::AllowedFeatureSet allowedFeatures,
-                             boost::optional<multiversion::FeatureCompatibilityVersion>
-                                 maxFeatureCompatibilityVersion) const override {
-        return _coll->parseValidator(
-            opCtx, validator, allowedFeatures, maxFeatureCompatibilityVersion);
+    Validator parseValidator(
+        OperationContext* opCtx,
+        const BSONObj& validator,
+        MatchExpressionParser::AllowedFeatureSet allowedFeatures) const override {
+        return _coll->parseValidator(opCtx, validator, allowedFeatures);
     }
 
     void setValidator(OperationContext* opCtx, Validator validator) override {
@@ -759,7 +757,7 @@ protected:
      */
     static ShardsvrMoveRange createMoveRangeRequest(const ChunkRange& chunkRange) {
         ShardsvrMoveRange req(kNss);
-        req.setEpoch(OID::gen());
+        req.setCollectionTimestamp(Timestamp(10));
         req.setFromShard(ShardId(kDonorConnStr.getSetName()));
         req.setMaxChunkSizeBytes(1024);
         req.getMoveRangeRequestBase().setToShard(ShardId(kRecipientConnStr.getSetName()));

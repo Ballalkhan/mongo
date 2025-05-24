@@ -50,14 +50,17 @@ class DevNullStorageEngineFactory : public StorageEngine::Factory {
 public:
     std::unique_ptr<StorageEngine> create(OperationContext* opCtx,
                                           const StorageGlobalParams& params,
-                                          const StorageEngineLockFile* lockFile) const override {
+                                          const StorageEngineLockFile* lockFile,
+                                          bool isReplSet,
+                                          bool shouldRecoverFromOplogAsStandalone,
+                                          bool inStandaloneMode) const override {
         StorageEngineOptions options;
         options.directoryPerDB = params.directoryperdb;
         options.forRepair = params.repair;
         options.forRestore = params.restore;
         options.lockFileCreatedByUncleanShutdown = lockFile && lockFile->createdByUncleanShutdown();
         return std::make_unique<StorageEngineImpl>(
-            opCtx, std::make_unique<DevNullKVEngine>(), options);
+            opCtx, std::make_unique<DevNullKVEngine>(), std::unique_ptr<KVEngine>(), options);
     }
 
     StringData getCanonicalName() const override {

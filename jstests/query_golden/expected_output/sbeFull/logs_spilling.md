@@ -233,3 +233,177 @@
 }
 ```
 
+## 11. Graph lookup
+### Pipeline
+```json
+[
+	{
+		"$limit" : 1
+	},
+	{
+		"$graphLookup" : {
+			"from" : "coll",
+			"startWith" : 1,
+			"connectFromField" : "to",
+			"connectToField" : "_id",
+			"as" : "path",
+			"depthField" : "depth"
+		}
+	}
+]
+```
+### Slow query spilling stats
+```json
+{
+	"graphLookupSpilledBytes" : "X",
+	"graphLookupSpilledDataStorageSize" : "X",
+	"graphLookupSpilledRecords" : 2,
+	"graphLookupSpills" : 2,
+	"usedDisk" : true
+}
+```
+
+## 12. Graph lookup with unwind and sort
+### Pipeline
+```json
+[
+	{
+		"$limit" : 1
+	},
+	{
+		"$graphLookup" : {
+			"from" : "coll",
+			"startWith" : 1,
+			"connectFromField" : "to",
+			"connectToField" : "_id",
+			"as" : "path",
+			"depthField" : "depth"
+		}
+	},
+	{
+		"$unwind" : "$path"
+	},
+	{
+		"$sort" : {
+			"path.depth" : 1
+		}
+	}
+]
+```
+### Slow query spilling stats
+```json
+{
+	"graphLookupSpilledBytes" : "X",
+	"graphLookupSpilledDataStorageSize" : "X",
+	"graphLookupSpilledRecords" : 2,
+	"graphLookupSpills" : 2,
+	"usedDisk" : true
+}
+```
+
+## 13. HashLookupUnwind
+### Pipeline
+```json
+[
+	{
+		"$lookup" : {
+			"from" : "logs_spilling_md_locations",
+			"localField" : "locationName",
+			"foreignField" : "name",
+			"as" : "location"
+		}
+	},
+	{
+		"$unwind" : "$location"
+	},
+	{
+		"$project" : {
+			"locationName" : false,
+			"location.extra" : false,
+			"location.coordinates" : false,
+			"colors" : false
+		}
+	}
+]
+```
+### Slow query spilling stats
+```json
+{
+	"hashLookupSpilledBytes" : "X",
+	"hashLookupSpilledDataStorageSize" : "X",
+	"hashLookupSpilledRecords" : 6,
+	"hashLookupSpills" : 6,
+	"usedDisk" : true
+}
+```
+
+## 14. SetWindowFields
+### Pipeline
+```json
+[
+	{
+		"$setWindowFields" : {
+			"partitionBy" : "$a",
+			"sortBy" : {
+				"b" : 1
+			},
+			"output" : {
+				"sum" : {
+					"$sum" : "$b"
+				}
+			}
+		}
+	}
+]
+```
+### Slow query spilling stats
+```json
+{
+	"setWindowFieldsSpilledBytes" : "X",
+	"setWindowFieldsSpilledDataStorageSize" : "X",
+	"setWindowFieldsSpilledRecords" : 4,
+	"setWindowFieldsSpills" : 4,
+	"sortSpilledBytes" : "X",
+	"sortSpilledDataStorageSize" : "X",
+	"sortSpilledRecords" : 13,
+	"sortSpills" : 7,
+	"usedDisk" : true
+}
+```
+
+### Pipeline
+```json
+[
+	{
+		"$setWindowFields" : {
+			"partitionBy" : "$a",
+			"sortBy" : {
+				"b" : 1
+			},
+			"output" : {
+				"sum" : {
+					"$sum" : "$b"
+				}
+			}
+		}
+	},
+	{
+		"$limit" : 1
+	}
+]
+```
+### Slow query spilling stats
+```json
+{
+	"setWindowFieldsSpilledBytes" : "X",
+	"setWindowFieldsSpilledDataStorageSize" : "X",
+	"setWindowFieldsSpilledRecords" : 3,
+	"setWindowFieldsSpills" : 3,
+	"sortSpilledBytes" : "X",
+	"sortSpilledDataStorageSize" : "X",
+	"sortSpilledRecords" : 13,
+	"sortSpills" : 7,
+	"usedDisk" : true
+}
+```
+

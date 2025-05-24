@@ -57,6 +57,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/client_cursor/cursor_id.h"
 #include "mongo/db/query/client_cursor/kill_cursors_gen.h"
+#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/traffic_recorder.h"
@@ -73,6 +74,7 @@
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/service_executor.h"
 #include "mongo/transport/session.h"
+#include "mongo/transport/session_establishment_rate_limiter.h"
 #include "mongo/transport/session_manager.h"
 #include "mongo/transport/session_workflow.h"
 #include "mongo/transport/transport_layer_manager.h"
@@ -545,6 +547,8 @@ private:
     AtomicWord<bool> _isTerminated{false};
     ClientStrandPtr _clientStrand;
 
+    bool _inFirstIteration = true;
+
     std::unique_ptr<WorkItem> _work;
     std::unique_ptr<WorkItem> _nextWork; /**< created by exhaust responses */
     boost::optional<IterationFrame> _iterationFrame;
@@ -799,6 +803,19 @@ void SessionWorkflow::Impl::_scheduleIteration() try {
         }
 
         try {
+            // If this is the first iteration of the session workflow, we must call into
+            // "throttleIfNeeded" to respect connection establishment rate limits.
+            if (MONGO_unlikely(_inFirstIteration)) {
+                if (gFeatureFlagRateLimitIngressConnectionEstablishment.isEnabled()) {
+                    uassertStatusOK(session()
+                                        ->getTransportLayer()
+                                        ->getSessionManager()
+                                        ->getSessionEstablishmentRateLimiter()
+                                        .throttleIfNeeded(client()));
+                }
+                _inFirstIteration = false;
+            }
+
             // All available service executors use dedicated threads, so it's okay to
             // run eager futures in an ordinary loop to bypass scheduler overhead. Loop
             // while we have `_nextWork` in case there have been synthetic exhaust

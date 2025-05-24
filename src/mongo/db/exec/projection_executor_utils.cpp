@@ -50,7 +50,11 @@
 namespace mongo::projection_executor_utils {
 bool applyProjectionToOneField(projection_executor::ProjectionExecutor* executor,
                                StringData field) {
-    const FieldPath fp{field};
+    // Skip field name validation if 'field' contains '$' or '.'.
+    bool skipValidation = field.find('\0') == std::string::npos &&
+        (field.find('$') != std::string::npos || field.find('.') != std::string::npos);
+    const FieldPath fp{
+        field, false /* precomputeHashes */, !skipValidation /* validateFieldNames */};
     MutableDocument md;
     md.setNestedField(fp, Value{1.0});
     auto output = executor->applyTransformation(md.freeze());
@@ -274,7 +278,8 @@ Value applyFindElemMatchProjection(const Document& input,
         return {};
     }
 
-    auto val = input[path.fullPath()];
+    const auto& fullPath = path.fullPath();
+    auto val = input[StringData{fullPath}];
     tassert(7241707,
             str::stream()
                 << "$elemMatch projection operator requires an array field, found field of type:"

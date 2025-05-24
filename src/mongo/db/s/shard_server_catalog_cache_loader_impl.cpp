@@ -62,6 +62,7 @@
 #include "mongo/db/operation_context_group.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/shard_metadata_util.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/type_shard_collection.h"
 #include "mongo/db/s/type_shard_collection_gen.h"
 #include "mongo/db/s/type_shard_database.h"
@@ -82,7 +83,6 @@
 #include "mongo/s/resharding/type_collection_fields_gen.h"
 #include "mongo/s/shard_version.h"
 #include "mongo/s/shard_version_factory.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/type_collection_common_types_gen.h"
 #include "mongo/util/assert_util.h"
@@ -801,7 +801,7 @@ ShardServerCatalogCacheLoaderImpl::_schedulePrimaryGetChunksSince(
         try {
             // If there are no enqueued tasks, get the max persisted
             return getPersistedMaxChunkVersion(opCtx, nss);
-        } catch (const ExceptionForCat<ErrorCategory::IDLParseError>& parseError) {
+        } catch (const ExceptionFor<ErrorCategory::IDLParseError>& parseError) {
             LOGV2_WARNING(9580700,
                           "Clearing up corrupted cached collection metadata. "
                           "The cache will be eventually repopulated by a full refresh.",
@@ -1155,7 +1155,7 @@ void ShardServerCatalogCacheLoaderImpl::_runCollAndChunksTasks(const NamespaceSt
 
         _updatePersistedCollAndChunksMetadata(context.opCtx(), nss);
         taskFinished = true;
-    } catch (const ExceptionForCat<ErrorCategory::ShutdownError>&) {
+    } catch (const ExceptionFor<ErrorCategory::ShutdownError>&) {
         LOGV2(22094,
               "Failed to persist chunk metadata update for collection due to shutdown",
               logAttrs(nss));
@@ -1231,7 +1231,7 @@ void ShardServerCatalogCacheLoaderImpl::_runDbTasks(const DatabaseName& dbName) 
 
         _updatePersistedDbMetadata(context.opCtx(), dbName);
         taskFinished = true;
-    } catch (const ExceptionForCat<ErrorCategory::ShutdownError>&) {
+    } catch (const ExceptionFor<ErrorCategory::ShutdownError>&) {
         LOGV2(
             22097, "Failed to persist metadata update for db due to shutdown", "db"_attr = dbName);
         inShutdown = true;

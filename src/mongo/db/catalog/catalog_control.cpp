@@ -201,13 +201,17 @@ PreviousCatalogState closeCatalog(OperationContext* opCtx) {
     LOGV2(20271, "closeCatalog: closing all databases");
     databaseHolder->closeAll(opCtx);
 
+    if (auto truncateMarkers = LocalOplogInfo::get(opCtx)->getTruncateMarkers()) {
+        truncateMarkers->kill();
+    }
+
     CollectionCatalog::write(opCtx, [opCtx](CollectionCatalog& catalog) {
         catalog.deregisterAllCollectionsAndViews(opCtx->getServiceContext());
     });
 
     // Close the storage engine's catalog.
     LOGV2(20272, "closeCatalog: closing storage engine catalog");
-    opCtx->getServiceContext()->getStorageEngine()->closeDurableCatalog(opCtx);
+    opCtx->getServiceContext()->getStorageEngine()->closeMDBCatalog(opCtx);
 
     // Reset the stats counter for extended range time-series collections. This is maintained
     // outside the catalog itself.
@@ -233,7 +237,7 @@ void openCatalog(OperationContext* opCtx,
 
     // Ignore orphaned idents because this function is used during rollback and not at
     // startup recovery, when we may try to recover orphaned idents.
-    storageEngine->loadDurableCatalog(opCtx, StorageEngine::LastShutdownState::kClean);
+    storageEngine->loadMDBCatalog(opCtx, StorageEngine::LastShutdownState::kClean);
     catalog::initializeCollectionCatalog(opCtx, storageEngine, stableTimestamp);
 
     LOGV2(20274, "openCatalog: reconciling catalog and idents");
@@ -252,7 +256,6 @@ void openCatalog(OperationContext* opCtx,
     CatalogControlUtils::reopenAllDatabasesAndReloadCollectionCatalog(
         opCtx, storageEngine, previousCatalogState, stableTimestamp);
 }
-
 
 void openCatalogAfterStorageChange(OperationContext* opCtx) {
     invariant(shard_role_details::getLocker(opCtx)->isW());

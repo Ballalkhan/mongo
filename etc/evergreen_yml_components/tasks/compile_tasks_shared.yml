@@ -17,6 +17,7 @@ variables:
       - func: "fetch pgo profile"
     teardown_task:
       - func: "f_expansions_write"
+      - func: "create bazel test report"
       - func: "attach report"
       - func: "attach artifacts"
       - func: "attach local resmoke invocation"
@@ -77,6 +78,7 @@ variables:
       - func: "f_expansions_write"
       - func: "run hang analyzer"
       - func: "wait for resmoke to shutdown"
+      - func: "save bazel run logs"
 
 task_groups:
   - <<: *compile_task_group_template
@@ -191,6 +193,7 @@ tasks:
             - "src/src/third_party/schemastore.org/**"
             - "src/poetry.lock"
             - "src/pyproject.toml"
+            - "src/poetry_requirements.txt"
             - "src/x509/**"
           exclude_files:
             - "src/*_test.pdb"
@@ -318,6 +321,52 @@ tasks:
           permissions: public-read
           content_type: ${content_type|application/tar}
           display_name: "Mongo crypt Library"
+
+  - name: crypt_lib_package
+    tags:
+      [
+        "assigned_to_jira_team_devprod_build",
+        "crypt",
+        "incompatible_aubsan",
+        "incompatible_community",
+        "incompatible_mac",
+        "incompatible_tsan",
+        "incompatible_windows",
+        "release_critical",
+        "requires_compile_variant",
+        "requires_large_host",
+      ]
+    depends_on:
+      - name: crypt_create_lib
+    commands:
+      - func: "do non-compile setup"
+      - func: "get and apply version expansions"
+      - func: "f_expansions_write"
+      - command: s3.get
+        params:
+          aws_key: ${aws_key}
+          aws_secret: ${aws_secret}
+          local_file: src/mongo_crypt_shared_v1-${version}.${ext|tgz}
+          remote_file: "${project}/mongo_crypt/${build_variant}/${revision}/mongo_crypt_shared_v1-${version}.${ext|tgz}"
+          bucket: mciuploads
+      - func: "run packager_crypt.py"
+      - command: archive.targz_pack
+        params:
+          target: "packages.tgz"
+          source_dir: "src"
+          include:
+            - "repo/**"
+      - command: s3.put
+        params:
+          optional: true
+          aws_key: ${aws_key}
+          aws_secret: ${aws_secret}
+          local_file: packages.tgz
+          remote_file: ${project}/${build_variant}/${revision}/artifacts/${build_id}-packages.tgz
+          bucket: mciuploads
+          permissions: public-read
+          content_type: application/tar
+          display_name: Packages
 
   - name: package
     tags: ["assigned_to_jira_team_devprod_build", "auxiliary"]

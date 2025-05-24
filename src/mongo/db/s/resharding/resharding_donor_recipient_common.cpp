@@ -56,6 +56,7 @@
 #include "mongo/db/s/resharding/resharding_donor_service.h"
 #include "mongo/db/s/resharding/resharding_recipient_service.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/shard_id.h"
 #include "mongo/db/storage/duplicate_key_error_info.h"
@@ -69,7 +70,6 @@
 #include "mongo/s/resharding/common_types_gen.h"
 #include "mongo/s/resharding/resharding_feature_flag_gen.h"
 #include "mongo/s/shard_key_pattern.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/cancellation.h"
@@ -136,7 +136,7 @@ void createReshardingStateMachine(OperationContext* opCtx, const ReshardingDocum
         auto registry = repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext());
         auto service = registry->lookupServiceByName(Service::kServiceName);
         StateMachine::getOrCreate(opCtx, service, doc.toBSON());
-    } catch (const ExceptionForCat<ErrorCategory::NotPrimaryError>&) {
+    } catch (const ExceptionFor<ErrorCategory::NotPrimaryError>&) {
         // resharding::processReshardingFieldsForCollection() is called on both primary and
         // secondary nodes as part of the shard version being refreshed. Due to the RSTL lock not
         // being held throughout the shard version refresh, it is also possible for the node to

@@ -53,10 +53,9 @@
 #include "mongo/db/timeseries/bucket_compression.h"
 #include "mongo/db/timeseries/timeseries_constants.h"
 #include "mongo/db/timeseries/timeseries_test_fixture.h"
-#include "mongo/db/timeseries/timeseries_write_util.h"
-#include "mongo/db/timeseries/write_ops/internal/timeseries_write_ops_internal.h"
 #include "mongo/db/timeseries/write_ops/timeseries_write_ops_utils_internal.h"
 #include "mongo/stdx/thread.h"
+#include "mongo/stdx/unordered_set.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
@@ -112,46 +111,191 @@ protected:
         const boost::optional<unsigned long>& rehydrateEra = boost::none,
         const boost::optional<unsigned long>& loadBucketIntoCatalogEra = boost::none,
         const boost::optional<BucketKey>& bucketKey = boost::none,
-        const boost::optional<BucketDocumentValidator>& documentValidator = boost::none);
+        const boost::optional<internal::BucketDocumentValidator>& documentValidator = boost::none);
 
     BSONObj _getCompressedBucketDoc(const BSONObj& bucketDoc);
+
+    BSONObj _getMetadata(BucketCatalog& catalog, const BucketId& bucketId);
 
     RolloverReason _rolloverReason(const std::shared_ptr<WriteBatch>& batch);
 
     void _testBucketMetadataFieldOrdering(const BSONObj& inputMetadata,
                                           const BSONObj& expectedMetadata);
+    boost::optional<bucket_catalog::BucketMetadata> getBucketMetadata(BSONObj measurement) const;
+
+    void _testBuildBatchedInsertContextWithMetaField(
+        std::vector<BSONObj>& userMeasurementsBatch,
+        stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>&
+            metaFieldMetadataToCorrectIndexOrderMap,
+        stdx::unordered_set<size_t>& expectedIndicesWithErrors) const;
+
+    void _testBuildBatchedInsertContextOneBatchWithSameMetaFieldType(BSONType type) const;
+
+    template <typename T>
+    void _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        BSONType type = String,
+        std::vector<T> metaValues = {_metaValue, _metaValue2, _metaValue3}) const;
+
+    void _testBuildBatchedInsertContextWithoutMetaField(
+        const NamespaceString& ns,
+        const std::vector<BSONObj>& userMeasurementsBatch,
+        const std::vector<size_t>& correctIndexOrder,
+        stdx::unordered_set<size_t>& expectedIndicesWithErrors) const;
+
+    void _testBuildBatchedInsertContextWithoutMetaFieldInCollWithMetaField(
+        const NamespaceString& ns,
+        const std::vector<BSONObj>& userMeasurementsBatch,
+        const std::vector<size_t>& correctIndexOrder,
+        stdx::unordered_set<size_t>& expectedIndicesWithErrors) const;
+
+    void _testBuildBatchedInsertContextWithoutMetaFieldInCollWithoutMetaField(
+        const NamespaceString& ns,
+        const std::vector<BSONObj>& userMeasurementsBatch,
+        const std::vector<size_t>& correctIndexOrder,
+        stdx::unordered_set<size_t>& expectedIndicesWithErrors) const;
+
+    void _testStageInsertBatch(const NamespaceString& ns,
+                               const UUID& collectionUUID,
+                               const std::vector<BSONObj>& batchOfMeasurements,
+                               const std::vector<size_t>& numWriteBatches) const;
+
+    void _testStageInsertBatchWithMetaField(const NamespaceString& ns,
+                                            const UUID& collectionUUID,
+                                            const std::vector<BSONObj>& batchOfMeasurements,
+                                            const std::vector<size_t>& numWriteBatches) const;
+
+    void _testStageInsertBatchInCollWithoutMetaField(
+        const NamespaceString& ns,
+        const UUID& collectionUUID,
+        const std::vector<BSONObj>& batchOfMeasurements,
+        const std::vector<size_t>& numWriteBatches) const;
+
+    void _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        BSONType type, std::vector<BSONObj> metaValues) const;
+
+    void _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        const NamespaceString& ns,
+        const UUID& collectionUUID,
+        const std::vector<BSONObj>& batchOfMeasurements,
+        const std::vector<size_t>& numWriteBatches) const;
 
     void _testStageInsertBatchIntoEligibleBucket(
         const NamespaceString& ns,
         const UUID& collectionUUID,
         const std::vector<BSONObj>& batchOfMeasurements,
-        const std::vector<size_t>& currBatchedInsertContextsIndex,
+        const std::vector<size_t>& curBatchedInsertContextsIndex,
         const std::vector<size_t>& numMeasurementsInWriteBatch,
-        size_t numBatchedInsertContexts) const;
+        size_t numBatchedInsertContexts,
+        boost::optional<absl::InlinedVector<Bucket*, 8>> buckets = boost::none) const;
 
     void _testStageInsertBatchIntoEligibleBucketWithMetaField(
         const NamespaceString& ns,
         const UUID& collectionUUID,
         const std::vector<BSONObj>& batchOfMeasurements,
-        const std::vector<size_t>& currBatchedInsertContextsIndex,
+        const std::vector<size_t>& curBatchedInsertContextsIndex,
         const std::vector<size_t>& numMeasurementsInWriteBatch,
-        size_t numBatchedInsertContexts) const;
+        size_t numBatchedInsertContexts,
+        boost::optional<absl::InlinedVector<Bucket*, 8>> buckets = boost::none) const;
 
     void _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
         const NamespaceString& ns,
         const UUID& collectionUUID,
         const std::vector<BSONObj>& batchOfMeasurements,
-        const std::vector<size_t>& currBatchedInsertContextsIndex,
+        const std::vector<size_t>& curBatchedInsertContextsIndex,
         const std::vector<size_t>& numMeasurementsInWriteBatch,
-        size_t numBatchedInsertContexts) const;
+        size_t numBatchedInsertContexts,
+        boost::optional<absl::InlinedVector<Bucket*, 8>> buckets = boost::none) const;
 
     void _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         const NamespaceString& ns,
         const UUID& collectionUUID,
         const std::vector<BSONObj>& batchOfMeasurements,
-        const std::vector<size_t>& currBatchedInsertContextsIndex,
+        const std::vector<size_t>& curBatchedInsertContextsIndex,
         const std::vector<size_t>& numMeasurementsInWriteBatch,
-        size_t numBatchedInsertContexts) const;
+        size_t numBatchedInsertContexts,
+        boost::optional<absl::InlinedVector<Bucket*, 8>> buckets = boost::none) const;
+
+    void _testCreateOrderedPotentialBucketsVector(
+        PotentialBucketOptions& potentialBucketOptions) const;
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> _getMeasurementRolloverReasonVec(
+        const std::vector<std::vector<BSONObj>>& measurements, const RolloverReason& reason) const;
+
+    // We generate these measurements without a rollover reason to guarantee that the measurements
+    // we create will fit into one bucket, but we can mark the bucket generated with a rollover
+    // reason.
+    const std::vector<BSONObj> measurement1Vec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 1});
+    const std::vector<BSONObj> measurement2Vec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 2});
+    const std::vector<BSONObj> measurement3Vec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 3});
+    const std::vector<BSONObj> measurement4Vec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 4});
+    const std::vector<BSONObj> measurement5Vec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 5});
+    const std::vector<BSONObj> measurementTimeseriesBucketMaxCountMinus1Vec =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = RolloverReason::kNone,
+             .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount - 1)});
+    const std::vector<BSONObj> measurementTimeseriesBucketMaxCountVec =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kNone});
+
+    const std::vector<std::vector<BSONObj>> unsorted1{measurement1Vec,
+                                                      measurement2Vec,
+                                                      measurement3Vec,
+                                                      measurementTimeseriesBucketMaxCountVec,
+                                                      measurement5Vec};
+    const std::vector<std::vector<BSONObj>> unsorted2{
+        measurementTimeseriesBucketMaxCountVec,
+        measurement4Vec,
+        measurement2Vec,
+        measurement3Vec,
+    };
+    const std::vector<std::vector<BSONObj>> unsorted3{measurement1Vec,
+                                                      measurement2Vec,
+                                                      measurement1Vec,
+                                                      measurement4Vec,
+                                                      measurement3Vec,
+                                                      measurement4Vec};
+    const std::vector<std::vector<BSONObj>> unsorted4{measurementTimeseriesBucketMaxCountVec,
+                                                      measurementTimeseriesBucketMaxCountVec,
+                                                      measurementTimeseriesBucketMaxCountVec,
+                                                      measurementTimeseriesBucketMaxCountVec,
+                                                      measurementTimeseriesBucketMaxCountVec,
+                                                      measurement1Vec};
+    const std::vector<std::vector<BSONObj>> unsortedLong1 =
+        _getFlattenedVector(std::vector<std::vector<std::vector<BSONObj>>>{unsorted1, unsorted2});
+    const std::vector<std::vector<BSONObj>> unsortedLong2 =
+        _getFlattenedVector(std::vector<std::vector<std::vector<BSONObj>>>{unsorted2, unsorted3});
+    const std::vector<std::vector<BSONObj>> unsortedLong3 =
+        _getFlattenedVector(std::vector<std::vector<std::vector<BSONObj>>>{unsorted3, unsorted4});
+    const std::vector<std::vector<BSONObj>> sorted1{measurement1Vec,
+                                                    measurement2Vec,
+                                                    measurement3Vec,
+                                                    measurement4Vec,
+                                                    measurement5Vec,
+                                                    measurementTimeseriesBucketMaxCountVec};
+    const std::vector<std::vector<BSONObj>> sorted2{measurement2Vec,
+                                                    measurement3Vec,
+                                                    measurement3Vec,
+                                                    measurement3Vec,
+                                                    measurementTimeseriesBucketMaxCountVec,
+                                                    measurementTimeseriesBucketMaxCountVec,
+                                                    measurementTimeseriesBucketMaxCountVec};
+    const std::vector<std::vector<BSONObj>> sorted3{
+        measurement1Vec, measurement1Vec, measurement2Vec, measurement2Vec, measurement4Vec};
+    const std::vector<std::vector<std::vector<BSONObj>>> allMeasurementVecs =
+        std::vector<std::vector<std::vector<BSONObj>>>{unsorted1,
+                                                       unsorted2,
+                                                       unsorted3,
+                                                       unsorted4,
+                                                       unsortedLong1,
+                                                       unsortedLong2,
+                                                       unsortedLong3,
+                                                       sorted1,
+                                                       sorted2,
+                                                       sorted3};
 };
 
 
@@ -187,16 +331,10 @@ void BucketCatalogTest::_commit(const NamespaceString& ns,
     ASSERT_EQ(batch->measurements.size(), expectedBatchSize) << batch->toBSON();
     ASSERT_EQ(batch->numPreviouslyCommittedMeasurements, numPreviouslyCommittedMeasurements)
         << batch->toBSON();
-    TimeseriesStmtIds stmtIds;
     std::vector<mongo::write_ops::InsertCommandRequest> insertOps;
     std::vector<mongo::write_ops::UpdateCommandRequest> updateOps;
-    write_ops_utils::makeWriteRequest(_opCtx,
-                                      batch,
-                                      getMetadata(*_bucketCatalog, batch->bucketId),
-                                      stmtIds,
-                                      ns.makeTimeseriesBucketsNamespace(),
-                                      &insertOps,
-                                      &updateOps);
+    write_ops_utils::makeWriteRequestFromBatch(
+        _opCtx, batch, ns.makeTimeseriesBucketsNamespace(), &insertOps, &updateOps);
     finish(*_bucketCatalog, batch);
 }
 
@@ -207,16 +345,15 @@ std::shared_ptr<bucket_catalog::WriteBatch> BucketCatalogTest::_insertOneWithout
     const UUID& uuid,
     const mongo::BSONObj& doc) {
     auto timeseriesOptions = _getTimeseriesOptions(nss);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(catalog,
-                                                        uuid,
-                                                        timeseriesOptions,
-                                                        {doc},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(catalog,
+                                                                            uuid,
+                                                                            timeseriesOptions,
+                                                                            {doc},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx = batchedInsertContexts[0];
     auto measurementTimestamp = std::get<Date_t>(batchedInsertCtx.measurementsTimesAndIndices[0]);
@@ -330,6 +467,19 @@ BSONObj BucketCatalogTest::_getCompressedBucketDoc(const BSONObj& bucketDoc) {
     return compressionResult.compressedBucket.value();
 }
 
+BSONObj BucketCatalogTest::_getMetadata(BucketCatalog& catalog, const BucketId& bucketId) {
+    auto const& stripe = *catalog.stripes[internal::getStripeNumber(catalog, bucketId)];
+    stdx::lock_guard stripeLock{stripe.mutex};
+
+    const Bucket* bucket =
+        internal::findBucket(catalog.bucketStateRegistry, stripe, stripeLock, bucketId);
+    if (!bucket) {
+        return {};
+    }
+
+    return bucket->key.metadata.toBSON();
+}
+
 StatusWith<tracking::unique_ptr<Bucket>> BucketCatalogTest::_testRehydrateBucket(
     const CollectionPtr& coll, const BSONObj& bucketDoc) {
     const NamespaceString ns = coll->ns().getTimeseriesViewNamespace();
@@ -368,7 +518,7 @@ Status BucketCatalogTest::_reopenBucket(
     const boost::optional<unsigned long>& rehydrateEra,
     const boost::optional<unsigned long>& loadBucketIntoCatalogEra,
     const boost::optional<BucketKey>& bucketKey,
-    const boost::optional<BucketDocumentValidator>& documentValidator) {
+    const boost::optional<internal::BucketDocumentValidator>& documentValidator) {
     const NamespaceString ns = coll->ns().getTimeseriesViewNamespace();
     const UUID uuid = coll->uuid();
     const boost::optional<TimeseriesOptions> options = coll->getTimeseriesOptions();
@@ -428,7 +578,7 @@ RolloverReason BucketCatalogTest::_rolloverReason(const std::shared_ptr<WriteBat
 
 void BucketCatalogTest::_testBucketMetadataFieldOrdering(const BSONObj& inputMetadata,
                                                          const BSONObj& expectedMetadata) {
-    auto swBucketKeyAndTime = internal::extractBucketingParameters(
+    auto swBucketKeyAndTime = extractBucketingParameters(
         getTrackingContext(_bucketCatalog->trackingContexts, TrackingScope::kOpenBucketsByKey),
         UUID::gen(),
         _getTimeseriesOptions(_ns1),
@@ -439,12 +589,378 @@ void BucketCatalogTest::_testBucketMetadataFieldOrdering(const BSONObj& inputMet
     ASSERT_EQ(metadata.woCompare(BSON(_metaField << expectedMetadata)), 0);
 }
 
-// currBatchedInsertContextsIndex is the index in batchedInsertContexts that the current write
+boost::optional<bucket_catalog::BucketMetadata> BucketCatalogTest::getBucketMetadata(
+    BSONObj measurement) const {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    auto metaValue = measurement.getField(_metaField);
+    if (metaValue.eoo())
+        return boost::none;
+    return bucket_catalog::BucketMetadata{
+        getTrackingContext(_bucketCatalog->trackingContexts,
+                           bucket_catalog::TrackingScope::kMeasurementBatching),
+        metaValue,
+        tsOptions.getMetaField().get()};
+}
+
+// expectedIndicesWithErrors should have unique index values.
+void BucketCatalogTest::_testBuildBatchedInsertContextWithMetaField(
+    std::vector<BSONObj>& userMeasurementsBatch,
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>&
+        metaFieldMetadataToCorrectIndexOrderMap,
+    stdx::unordered_set<size_t>& expectedIndicesWithErrors) const {
+    AutoGetCollection bucketsColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), LockMode::MODE_IX);
+    tracking::Context trackingContext;
+    timeseries::bucket_catalog::ExecutionStatsController stats;
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+
+    auto batchedInsertContextVector = bucket_catalog::buildBatchedInsertContextsWithMetaField(
+        *_bucketCatalog,
+        bucketsColl->uuid(),
+        tsOptions,
+        userMeasurementsBatch,
+        /*startIndex=*/0,
+        /*numDocsToStage=*/userMeasurementsBatch.size(),
+        /*docsToRetry=*/{},
+        stats,
+        trackingContext,
+        errorsAndIndices);
+
+    ASSERT_EQ(batchedInsertContextVector.size(), metaFieldMetadataToCorrectIndexOrderMap.size());
+
+    // Check that all of the tuples in each BatchedInsertContext have the correct order and
+    // measurement.
+    for (size_t i = 0; i < batchedInsertContextVector.size(); i++) {
+        auto insertBatchContext = batchedInsertContextVector[i];
+        ASSERT_EQ(insertBatchContext.key.metadata.getMetaField().get(), _metaField);
+        auto metaFieldMetadata = insertBatchContext.key.metadata;
+        ASSERT_EQ(insertBatchContext.measurementsTimesAndIndices.size(),
+                  metaFieldMetadataToCorrectIndexOrderMap[metaFieldMetadata].size());
+
+        for (size_t j = 0; j < insertBatchContext.measurementsTimesAndIndices.size(); j++) {
+            auto tuple = insertBatchContext.measurementsTimesAndIndices[j];
+            auto measurement = std::get<BSONObj>(tuple);
+            bucket_catalog::BucketMetadata metadata = bucket_catalog::BucketMetadata{
+                trackingContext, measurement[_metaField], tsOptions.getMetaField().get()};
+            ASSERT(metadata == metaFieldMetadata);
+            auto index = std::get<size_t>(tuple);
+            ASSERT_EQ(index, metaFieldMetadataToCorrectIndexOrderMap[metaFieldMetadata][j]);
+            ASSERT_EQ(userMeasurementsBatch[index].woCompare(measurement), 0);
+        }
+    }
+
+    ASSERT_EQ(errorsAndIndices.size(), expectedIndicesWithErrors.size());
+
+    // If we expected to see errors, check that the Statuses have the correct error code and
+    // that there is a one-to-one mapping between indices that we expected to see errors for and
+    // the indices that we did see errors for.
+    for (size_t i = 0; i < errorsAndIndices.size(); i++) {
+        auto writeStageErrorAndIndex = errorsAndIndices[i];
+        ASSERT_EQ(writeStageErrorAndIndex.error.code(), ErrorCodes::BadValue);
+        auto index = writeStageErrorAndIndex.index;
+        ASSERT(expectedIndicesWithErrors.contains(index));
+    }
+};
+
+void BucketCatalogTest::_testBuildBatchedInsertContextOneBatchWithSameMetaFieldType(
+    BSONType type) const {
+    std::vector<BSONObj> userMeasurementsBatch{
+        _generateMeasurement(type, Date_t::fromMillisSinceEpoch(200)).obj(),
+        _generateMeasurement(type, Date_t::fromMillisSinceEpoch(100)).obj(),
+        _generateMeasurement(type, Date_t::fromMillisSinceEpoch(101)).obj(),
+        _generateMeasurement(type, Date_t::fromMillisSinceEpoch(202)).obj(),
+        _generateMeasurement(type, Date_t::fromMillisSinceEpoch(201)).obj(),
+    };
+
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[0])),
+        std::initializer_list<size_t>{1, 2, 0, 4, 3});
+    stdx::unordered_set<size_t> expectedIndicesWithErrors;
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+}
+
+template <typename T>
+void BucketCatalogTest::_testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+    BSONType type, std::vector<T> metaValues) const {
+    BSONObj meta0 = BSON(_metaField << metaValues[0]);
+    BSONObj meta1 = BSON(_metaField << metaValues[1]);
+    BSONObj meta2 = BSON(_metaField << metaValues[2]);
+    std::vector<BSONObj> userMeasurementsBatch{
+        _generateMeasurement(meta1, Date_t::fromMillisSinceEpoch(101)).obj(),
+        _generateMeasurement(meta2, Date_t::fromMillisSinceEpoch(104)).obj(),
+        _generateMeasurement(meta0, Date_t::fromMillisSinceEpoch(105)).obj(),
+        _generateMeasurement(meta0, Date_t::fromMillisSinceEpoch(107)).obj(),
+        _generateMeasurement(meta1, Date_t::fromMillisSinceEpoch(103)).obj(),
+        _generateMeasurement(meta2, Date_t::fromMillisSinceEpoch(102)).obj(),
+        _generateMeasurement(meta0, Date_t::fromMillisSinceEpoch(106)).obj(),
+    };
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[2])), /* for _metaValues[0] */
+        std::initializer_list<size_t>{2, 6, 3});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[0])), /* for _metaValue[1] */
+        std::initializer_list<size_t>{0, 4});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[1])), /* for _metaValue[2] */
+        std::initializer_list<size_t>{5, 1});
+    stdx::unordered_set<size_t> expectedIndicesWithErrors;
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+}
+
+// expectedIndicesWithErrors should have unique index values.
+void BucketCatalogTest::_testBuildBatchedInsertContextWithoutMetaField(
+    const NamespaceString& ns,
+    const std::vector<BSONObj>& userMeasurementsBatch,
+    const std::vector<size_t>& correctIndexOrder,
+    stdx::unordered_set<size_t>& expectedIndicesWithErrors) const {
+    AutoGetCollection autoColl(_opCtx, ns.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+    tracking::Context trackingContext;
+    timeseries::bucket_catalog::ExecutionStatsController stats;
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    auto batchedInsertContextVector =
+        buildBatchedInsertContextsNoMetaField(*_bucketCatalog,
+                                              bucketsColl->uuid(),
+                                              bucketsColl->getTimeseriesOptions().get(),
+                                              userMeasurementsBatch,
+                                              /*startIndex=*/0,
+                                              /*numDocsToStage=*/userMeasurementsBatch.size(),
+                                              /*docsToRetry=*/{},
+                                              stats,
+                                              trackingContext,
+                                              errorsAndIndices);
+
+    // Since we are inserting measurements with metadata values, all of the measurements should
+    // fit into one batch. The only exception here will be when all of the measurements are
+    // malformed, in which case we should have an empty vector.
+    if (expectedIndicesWithErrors.size() == userMeasurementsBatch.size()) {
+        ASSERT_EQ(batchedInsertContextVector.size(), 0);
+    } else {
+        ASSERT_EQ(batchedInsertContextVector.size(), 1);
+        auto batchedInsertContext = batchedInsertContextVector.front();
+        ASSERT_EQ(batchedInsertContext.key.metadata.getMetaField(), boost::none);
+
+        // Check that all of the tuples in the BatchedInsertContext have the correct order and
+        // measurement.
+        for (size_t i = 0; i < batchedInsertContext.measurementsTimesAndIndices.size(); i++) {
+            auto tuple = batchedInsertContext.measurementsTimesAndIndices[i];
+            ASSERT_EQ(correctIndexOrder[i], std::get<size_t>(tuple));
+            ASSERT_EQ(
+                userMeasurementsBatch[correctIndexOrder[i]].woCompare(std::get<BSONObj>(tuple)), 0);
+        }
+    }
+
+    ASSERT_EQ(errorsAndIndices.size(), expectedIndicesWithErrors.size());
+
+    // If we expected to see errors, check that the Statuses have the correct error code and
+    // that there is a one-to-one mapping between indices that we expected to see errors for and
+    // the indices that we did see errors for.
+    for (size_t i = 0; i < errorsAndIndices.size(); i++) {
+        auto writeStageErrorAndIndex = errorsAndIndices[i];
+        ASSERT_EQ(writeStageErrorAndIndex.error.code(), ErrorCodes::BadValue);
+        auto index = writeStageErrorAndIndex.index;
+        ASSERT(expectedIndicesWithErrors.contains(index));
+    }
+}
+
+void BucketCatalogTest::_testBuildBatchedInsertContextWithoutMetaFieldInCollWithMetaField(
+    const NamespaceString& ns,
+    const std::vector<BSONObj>& userMeasurementsBatch,
+    const std::vector<size_t>& correctIndexOrder,
+    stdx::unordered_set<size_t>& expectedIndicesWithErrors) const {
+    _assertNoMetaFieldsInCollWithMetaField(ns, userMeasurementsBatch);
+    _testBuildBatchedInsertContextWithoutMetaField(
+        ns, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+}
+
+void BucketCatalogTest::_testBuildBatchedInsertContextWithoutMetaFieldInCollWithoutMetaField(
+    const NamespaceString& ns,
+    const std::vector<BSONObj>& userMeasurementsBatch,
+    const std::vector<size_t>& correctIndexOrder,
+    stdx::unordered_set<size_t>& expectedIndicesWithErrors) const {
+    _assertCollWithoutMetaField(ns);
+    _testBuildBatchedInsertContextWithoutMetaField(
+        ns, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+}
+
+// _testBuildBatchedInsertContextWithMalformedMeasurements will accept a BSONType and an optional
+// std::vector<T> with only two elements that should store the values of meta values if we have a
+// non-constant BSONType.
+// We assert if the BSONType is non-constant and we don't have a metaValues vector.
+// We assert if metaValues.size() != 2.
+void BucketCatalogTest::_testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+    const BSONType type, const std::vector<BSONObj> metaValues) const {
+    auto isConstantBSONType =
+        (std::find(_constantBSONTypes.begin(), _constantBSONTypes.end(), type) !=
+         _constantBSONTypes.end());
+    // We case on how we generate based on if we have the metaValues vector or not.
+    // We assert if there is no metaValues vector and a non-constant BSONType.
+    ASSERT(isConstantBSONType || metaValues.size() == 2);
+    auto measurement1 = (isConstantBSONType)
+        ? _generateMeasurement(type, Date_t::fromMillisSinceEpoch(105)).obj()
+        : _generateMeasurement(metaValues[0], Date_t::fromMillisSinceEpoch(105)).obj();
+    auto measurement2 = (isConstantBSONType)
+        ? _generateMeasurement(type, boost::none).obj()
+        : _generateMeasurement(metaValues[0], boost::none).obj();
+    auto measurement3 = (isConstantBSONType)
+        ? _generateMeasurement(type, boost::none).obj()
+        : _generateMeasurement(metaValues[0], boost::none).obj();
+    auto measurement4 = (isConstantBSONType)
+        ? _generateMeasurement(type, Date_t::fromMillisSinceEpoch(103)).obj()
+        : _generateMeasurement(metaValues[1], Date_t::fromMillisSinceEpoch(103)).obj();
+    auto measurement5 = (isConstantBSONType)
+        ? _generateMeasurement(type, Date_t::fromMillisSinceEpoch(101)).obj()
+        : _generateMeasurement(metaValues[0], Date_t::fromMillisSinceEpoch(101)).obj();
+    std::vector<BSONObj> userMeasurementsBatch{
+        measurement1, measurement2, measurement3, measurement4, measurement5};
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    if (isConstantBSONType) {
+        metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+            *(getBucketMetadata(userMeasurementsBatch[0])), std::initializer_list<size_t>{4, 3, 0});
+    } else {
+        metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+            *(getBucketMetadata(userMeasurementsBatch[0])), std::initializer_list<size_t>{4, 0});
+        metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+            *(getBucketMetadata(userMeasurementsBatch[3])), std::initializer_list<size_t>{3});
+    }
+    stdx::unordered_set<size_t> expectedIndicesWithErrors{1, 2};
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+}
+
+// numWriteBatches is the size of the writeBatches that should be generated from the
+// batchedInsertContext at the same index.
+// numWriteBatches.size() == batchedInsertContexts.size()
+// sum(numWriteBatches) == the total number of buckets that should be written to from the input
+// batchOfMeasurements.
+// Example with RolloverReason::kSchemaChange and two distinct meta fields:
+// batchOfMeasurements = [
+//                         {_timeField: Date_t::now(), _metaField: "a",  "deathGrips": "isOnline"},
+//                         {_timeField: Date_t::now(), _metaField: "a",  "deathGrips": "isOffline"},
+//                         {_timeField: Date_t::now() + Seconds(1), _metaField: "a",  "deathGrips":
+//                         100},
+//                         {_timeField: Date_t::now(), _metaField: "b",  "deathGrips": "isOffline"},
+//                       ]
+// The batchedInsertContexts = [
+//                      {bucketKey: [...], stripeNumber: 0, options: [...], stats: [...],
+//                          measurementsTimesAndIndices: [
+//                              {_timeField: Date_t::now(), _metaField: "a",  "deathGrips":
+//                              "isOnline"},
+//                              {_timeField: Date_t::now(), _metaField: "a",  "deathGrips":
+//                              "isOffline"},
+//                              {_timeField: Date_t::now() + Seconds(1), _metaField: "a",
+//                              "deathGrips": 100},
+//                          ]},
+//                       {bucketKey: [...], stripeNumber: 1, options: [...], stats: [...],
+//                          measurementsTimesAndIndices: [
+//                              {_timeField: Date_t::now(), _metaField: "b",  "deathGrips":
+//                              "isOffline"},
+//                          ]},
+//                     ]
+// Note: we simplified the measurementsTimesAndIndices vector to consist of measurement's BSONObj
+// and not measurement's BatchedInsertTuple.
+//
+// numWriteBatches = [2, 1]
+//
+// We are accessing {_metaField: "a"}/batchedInsertContexts[0] and write the first two elements into
+// one bucket.
+// We detect a schema change with the "deathGrips" field for the last measurement in
+// batchedInsertContexts[0].measurementsTimesAndIndices and write this measurement to a second
+// bucket.
+// This means for {_metaField: "a"}/batchedInsertContexts[0], we have two distinct write
+// batches (numWriteBatches[0]).
+//
+// We then write one measurement to a third bucket because we have a distinct {_metaField:
+// "b"} in batchedInsertContexts[1] (that doesn't hash to the same stripe).
+// This means for {_metaField: "b"}/batchedInsertContexts[1], we have one distinct write batch
+// (numWriteBatches[1]).
+
+// If we are attempting to trigger kCachePressure, we must call this function with
+// _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes. Otherwise, _storageCacheSizeBytes
+// = kDefaultStorageCacheSizeBytes.
+void BucketCatalogTest::_testStageInsertBatch(const NamespaceString& ns,
+                                              const UUID& collectionUUID,
+                                              const std::vector<BSONObj>& batchOfMeasurements,
+                                              const std::vector<size_t>& numWriteBatches) const {
+    AutoGetCollection autoColl(_opCtx, ns.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+    auto timeseriesOptions = _getTimeseriesOptions(ns);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    auto batchedInsertContexts =
+        bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                   collectionUUID,
+                                                   timeseriesOptions,
+                                                   batchOfMeasurements,
+                                                   /*startIndex=*/0,
+                                                   /*numDocsToStage=*/batchOfMeasurements.size(),
+                                                   /*docsToRetry=*/{},
+                                                   errorsAndIndices);
+    ASSERT(errorsAndIndices.empty());
+
+    ASSERT_EQ(batchedInsertContexts.size(), numWriteBatches.size());
+    size_t numMeasurements = 0;
+    for (size_t i = 0; i < batchedInsertContexts.size(); i++) {
+        numMeasurements += batchedInsertContexts[i].measurementsTimesAndIndices.size();
+    }
+    ASSERT_EQ(numMeasurements, batchOfMeasurements.size());
+
+    for (size_t i = 0; i < batchedInsertContexts.size(); i++) {
+        auto writeBatches = bucket_catalog::stageInsertBatch(_opCtx,
+                                                             *_bucketCatalog,
+                                                             bucketsColl.get(),
+                                                             _opCtx->getOpID(),
+                                                             _stringDataComparatorUnused,
+                                                             _storageCacheSizeBytes,
+                                                             _compressBucketFuncUnused,
+                                                             batchedInsertContexts[i]);
+        ASSERT_EQ(writeBatches.size(), numWriteBatches[i]);
+    }
+}
+
+void BucketCatalogTest::_testStageInsertBatchWithMetaField(
+    const NamespaceString& ns,
+    const UUID& collectionUUID,
+    const std::vector<BSONObj>& batchOfMeasurements,
+    const std::vector<size_t>& numWriteBatches) const {
+    _assertCollWithMetaField(ns, batchOfMeasurements);
+    _testStageInsertBatch(ns, collectionUUID, batchOfMeasurements, numWriteBatches);
+}
+
+void BucketCatalogTest::_testStageInsertBatchInCollWithoutMetaField(
+    const NamespaceString& ns,
+    const UUID& collectionUUID,
+    const std::vector<BSONObj>& batchOfMeasurements,
+    const std::vector<size_t>& numWriteBatches) const {
+    _assertCollWithoutMetaField(ns);
+    _testStageInsertBatch(ns, collectionUUID, batchOfMeasurements, numWriteBatches);
+}
+
+void BucketCatalogTest::_testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+    const NamespaceString& ns,
+    const UUID& collectionUUID,
+    const std::vector<BSONObj>& batchOfMeasurements,
+    const std::vector<size_t>& numWriteBatches) const {
+    _assertNoMetaFieldsInCollWithMetaField(ns, batchOfMeasurements);
+    _testStageInsertBatch(ns, collectionUUID, batchOfMeasurements, numWriteBatches);
+}
+
+// curBatchedInsertContextsIndex is the index in batchedInsertContexts that the current write
 // batch should be accessing.
 // numMeasurementsInWriteBatch is the number of measurements that should be in the current write
 // batch returned by stageInsertBatch.
-// The currBatchedInsertContextsIndex.size() == numMeasurementsInWriteBatch.size() == the total
+// The curBatchedInsertContextsIndex.size() == numMeasurementsInWriteBatch.size() == the total
 // number of buckets that should be written to from the input batchOfMeasurements.
+// We require curBatchedInsertContextsIndex.size() == numMeasurementsInWriteBatch.size() > 0, and
+// will assert otherwise.
 // Example with RolloverReason::kSchemaChange and two distinct meta fields:
 // batchOfMeasurements = [
 //                         {_timeField: Date_t::now(), _metaField: "a",  "deathGrips": "isOnline"},
@@ -472,7 +988,7 @@ void BucketCatalogTest::_testBucketMetadataFieldOrdering(const BSONObj& inputMet
 // Note: we simplified the measurementsTimesAndIndices vector to consist of measurement's BSONObj
 // and not measurement's BatchedInsertTuple.
 //
-// currBatchedInsertContextsIndex = [0, 0, 1]
+// curBatchedInsertContextsIndex = [0, 0, 1]
 // numMeasurementsInWriteBatch = [2, 1, 1]
 //
 // We are accessing the {_metaField: "a"}/batchedInsertContexts[0] and write the
@@ -488,31 +1004,36 @@ void BucketCatalogTest::_testBucketMetadataFieldOrdering(const BSONObj& inputMet
 // If we are attempting to trigger kCachePressure, we must call this function with
 // _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes. Otherwise, _storageCacheSizeBytes
 // = kDefaultStorageCacheSizeBytes.
+//
+// We can also test stageInsertBatchIntoEligibleBucket for an vector of input buckets.
+// We require that buckets.size() == curBatchedInsertContextsIndex.size() ==
+// numMeasurementsInWriteBatch.size(), and will assert otherwise.
 void BucketCatalogTest::_testStageInsertBatchIntoEligibleBucket(
     const NamespaceString& ns,
     const UUID& collectionUUID,
     const std::vector<BSONObj>& measurements,
-    const std::vector<size_t>& currBatchedInsertContextsIndex,
+    const std::vector<size_t>& curBatchedInsertContextsIndex,
     const std::vector<size_t>& numMeasurementsInWriteBatch,
-    size_t numBatchedInsertContexts) const {
+    size_t numBatchedInsertContexts,
+    boost::optional<absl::InlinedVector<Bucket*, 8>> buckets) const {
     ASSERT(numMeasurementsInWriteBatch.size() > 0 && numBatchedInsertContexts > 0);
     // These size values are equivalent to the total number of buckets that should be written to
     // from the input measurements.
-    ASSERT(currBatchedInsertContextsIndex.size() == numMeasurementsInWriteBatch.size());
+    ASSERT(curBatchedInsertContextsIndex.size() == numMeasurementsInWriteBatch.size());
     AutoGetCollection autoColl(_opCtx, ns.makeTimeseriesBucketsNamespace(), MODE_IS);
     const auto& bucketsColl = autoColl.getCollection();
 
     auto timeseriesOptions = _getTimeseriesOptions(ns);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
+    std::vector<timeseries::bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
     auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        collectionUUID,
-                                                        timeseriesOptions,
-                                                        measurements,
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/measurements.size(),
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+        bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                   collectionUUID,
+                                                   timeseriesOptions,
+                                                   measurements,
+                                                   /*startIndex=*/0,
+                                                   /*numDocsToStage=*/measurements.size(),
+                                                   /*docsToRetry=*/{},
+                                                   errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     ASSERT_EQ(batchedInsertContexts.size(), numBatchedInsertContexts);
     size_t numMeasurements = 0;
@@ -521,93 +1042,58 @@ void BucketCatalogTest::_testStageInsertBatchIntoEligibleBucket(
     }
     ASSERT_EQ(numMeasurements, measurements.size());
 
-    auto currentBatch = batchedInsertContexts[0];
-    auto measurementTimestamp = std::get<Date_t>(currentBatch.measurementsTimesAndIndices[0]);
+    size_t curPosition = 0;
+    size_t totalMeasurementsInserted = 0;
+    size_t curPositionFromNumMeasurementsInBatch = 0;
+    for (size_t i = 0; i < numMeasurementsInWriteBatch.size(); i++) {
+        auto& curBatch = batchedInsertContexts[curBatchedInsertContextsIndex[i]];
+        auto& stripe = *_bucketCatalog->stripes[curBatch.stripeNumber];
+        stdx::lock_guard stripeLock{stripe.mutex};
 
-    Bucket& bucketToInsertInto =
-        internal::allocateBucket(*_bucketCatalog,
-                                 *_bucketCatalog->stripes[currentBatch.stripeNumber],
-                                 WithLock::withoutLock(),
-                                 currentBatch.key,
-                                 currentBatch.options,
-                                 measurementTimestamp,
-                                 nullptr,
-                                 currentBatch.stats);
-
-    size_t currentPosition = 0;
-    size_t currentPositionFromNumMeasurementsInBatch = 0;
-    auto& stripe = *_bucketCatalog->stripes[currentBatch.stripeNumber];
-    stdx::lock_guard stripeLock{stripe.mutex};
-    auto writeBatch = activeBatch(_bucketCatalog->trackingContexts,
-                                  bucketToInsertInto,
-                                  _opCtx->getOpID(),
-                                  currentBatch.stripeNumber,
-                                  currentBatch.stats);
-    auto successfulInsertion =
-        internal::stageInsertBatchIntoEligibleBucket(*_bucketCatalog,
-                                                     _opCtx->getOpID(),
-                                                     bucketsColl->getDefaultCollator(),
-                                                     currentBatch,
-                                                     stripe,
-                                                     stripeLock,
-                                                     _storageCacheSizeBytes,
-                                                     bucketToInsertInto,
-                                                     currentPosition,
-                                                     writeBatch);
-    currentPositionFromNumMeasurementsInBatch += numMeasurementsInWriteBatch[0];
-    ASSERT_EQ(currentPosition, currentPositionFromNumMeasurementsInBatch);
-
-    if (numMeasurementsInWriteBatch.size() == 1) {
-        ASSERT(successfulInsertion);
-        ASSERT_EQ(currentPosition, measurements.size());
-        ASSERT_EQ(bucketToInsertInto.numMeasurements, measurements.size());
-        ASSERT_EQ(currentPositionFromNumMeasurementsInBatch, measurements.size());
-        return;
-    }
-
-    // We do the first insertion outside of the loop so we don't rollover/allocate an additional
-    // bucket if we don't need to.
-    for (size_t i = 1; i < numMeasurementsInWriteBatch.size(); i++) {
-        auto prevBatch = batchedInsertContexts[currBatchedInsertContextsIndex[i - 1]];
-        // Let's rollover our first bucket and finish inserting the batch with another call into
-        // the helper.
-        auto currentMeasurementTime =
-            std::get<Date_t>(currentBatch.measurementsTimesAndIndices[currentPosition]);
-
-        // We rollover with kSchemaChange regardless of the rollover reason. This will make our
-        // stats inaccurate, but shouldn't impact testing stageInsertBatchIntoEligibleBucket itself.
-        auto newBucketToInsertInto =
-            &internal::rolloverAndAllocateBucket(*_bucketCatalog,
-                                                 stripe,
-                                                 stripeLock,
-                                                 bucketToInsertInto,
-                                                 prevBatch.key,
-                                                 prevBatch.options,
-                                                 RolloverReason::kSchemaChange,
-                                                 currentMeasurementTime,
-                                                 bucketsColl->getDefaultCollator(),
-                                                 prevBatch.stats);
+        // We are looking at a new batchedInsertContext, so we should reset curPosition
+        if (i != 0 && (curBatchedInsertContextsIndex[i] != curBatchedInsertContextsIndex[i - 1])) {
+            curPosition = 0;
+        }
+        Bucket* bucketToInsertInto = (buckets)
+            ? (*buckets)[i]
+            : _generateBucketWithBatch(ns, collectionUUID, curBatch, curPosition);
+        if (buckets) {
+            bucketToInsertInto->rolloverReason = RolloverReason::kNone;
+        }
+        size_t prevNumMeasurements = bucketToInsertInto->numMeasurements;
         auto newWriteBatch = activeBatch(_bucketCatalog->trackingContexts,
-                                         *newBucketToInsertInto,
+                                         *bucketToInsertInto,
                                          _opCtx->getOpID(),
-                                         currentBatch.stripeNumber,
-                                         currentBatch.stats);
-        auto currBatch = batchedInsertContexts[currBatchedInsertContextsIndex[i]];
-        successfulInsertion =
+                                         curBatch.stripeNumber,
+                                         curBatch.stats);
+        size_t prevCurPosition = curPosition;
+        auto successfulInsertion =
             internal::stageInsertBatchIntoEligibleBucket(*_bucketCatalog,
                                                          _opCtx->getOpID(),
                                                          bucketsColl->getDefaultCollator(),
-                                                         currBatch,
+                                                         curBatch,
                                                          stripe,
                                                          stripeLock,
                                                          _storageCacheSizeBytes,
-                                                         *newBucketToInsertInto,
-                                                         currentPosition,
+                                                         *bucketToInsertInto,
+                                                         curPosition,
                                                          newWriteBatch);
-        ASSERT_EQ(newBucketToInsertInto->numMeasurements, numMeasurementsInWriteBatch[i]);
-        currentPositionFromNumMeasurementsInBatch += numMeasurementsInWriteBatch[i];
-        ASSERT_EQ(currentPosition, currentPositionFromNumMeasurementsInBatch);
+        ASSERT_EQ((bucketToInsertInto->numMeasurements - prevNumMeasurements),
+                  numMeasurementsInWriteBatch[i]);
+        curPositionFromNumMeasurementsInBatch += numMeasurementsInWriteBatch[i];
+        totalMeasurementsInserted += (curPosition - prevCurPosition);
+        ASSERT_EQ(totalMeasurementsInserted, curPositionFromNumMeasurementsInBatch);
 
+        // We need to rollover so we don't have multiple open buckets.
+        // We rollover with kSchemaChange regardless of the rollover reason. This
+        // will make our stats inaccurate, but shouldn't impact testing
+        // stageInsertBatchIntoEligibleBucket itself.
+        bucketToInsertInto->rolloverReason = RolloverReason::kSchemaChange;
+        internal::rollover(*_bucketCatalog,
+                           stripe,
+                           stripeLock,
+                           *bucketToInsertInto,
+                           RolloverReason::kSchemaChange);
         if (i == (numMeasurementsInWriteBatch.size() - 1)) {
             ASSERT(successfulInsertion);
         } else {
@@ -620,48 +1106,103 @@ void BucketCatalogTest::_testStageInsertBatchIntoEligibleBucketWithMetaField(
     const NamespaceString& ns,
     const UUID& collectionUUID,
     const std::vector<BSONObj>& measurements,
-    const std::vector<size_t>& currBatchedInsertContextsIndex,
+    const std::vector<size_t>& curBatchedInsertContextsIndex,
     const std::vector<size_t>& numMeasurementsInWriteBatch,
-    size_t numBatchedInsertContexts) const {
+    size_t numBatchedInsertContexts,
+    boost::optional<absl::InlinedVector<Bucket*, 8>> buckets) const {
     _assertCollWithMetaField(ns, measurements);
     _testStageInsertBatchIntoEligibleBucket(ns,
                                             collectionUUID,
                                             measurements,
-                                            currBatchedInsertContextsIndex,
+                                            curBatchedInsertContextsIndex,
                                             numMeasurementsInWriteBatch,
-                                            numBatchedInsertContexts);
+                                            numBatchedInsertContexts,
+                                            buckets);
 }
 
 void BucketCatalogTest::_testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
     const NamespaceString& ns,
     const UUID& collectionUUID,
     const std::vector<BSONObj>& measurements,
-    const std::vector<size_t>& currBatchedInsertContextsIndex,
+    const std::vector<size_t>& curBatchedInsertContextsIndex,
     const std::vector<size_t>& numMeasurementsInWriteBatch,
-    size_t numBatchedInsertContexts) const {
+    size_t numBatchedInsertContexts,
+    boost::optional<absl::InlinedVector<Bucket*, 8>> buckets) const {
     _assertCollWithoutMetaField(ns);
     _testStageInsertBatchIntoEligibleBucket(ns,
                                             collectionUUID,
                                             measurements,
-                                            currBatchedInsertContextsIndex,
+                                            curBatchedInsertContextsIndex,
                                             numMeasurementsInWriteBatch,
-                                            numBatchedInsertContexts);
+                                            numBatchedInsertContexts,
+                                            buckets);
 }
 
 void BucketCatalogTest::_testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
     const NamespaceString& ns,
     const UUID& collectionUUID,
     const std::vector<BSONObj>& measurements,
-    const std::vector<size_t>& currBatchedInsertContextsIndex,
+    const std::vector<size_t>& curBatchedInsertContextsIndex,
     const std::vector<size_t>& numMeasurementsInWriteBatch,
-    size_t numBatchedInsertContexts) const {
+    size_t numBatchedInsertContexts,
+    boost::optional<absl::InlinedVector<Bucket*, 8>> buckets) const {
     _assertNoMetaFieldsInCollWithMetaField(ns, measurements);
     _testStageInsertBatchIntoEligibleBucket(ns,
                                             collectionUUID,
                                             measurements,
-                                            currBatchedInsertContextsIndex,
+                                            curBatchedInsertContextsIndex,
                                             numMeasurementsInWriteBatch,
-                                            numBatchedInsertContexts);
+                                            numBatchedInsertContexts,
+                                            buckets);
+}
+
+void BucketCatalogTest::_testCreateOrderedPotentialBucketsVector(
+    PotentialBucketOptions& potentialBucketOptions) const {
+    auto& kSoftClosedBuckets = potentialBucketOptions.kSoftClosedBuckets;
+    auto& kArchivedBuckets = potentialBucketOptions.kArchivedBuckets;
+    auto& kNoneBucket = potentialBucketOptions.kNoneBucket;
+    bool kNoneBucketExists = (kNoneBucket != nullptr);
+    auto potentialBuckets = createOrderedPotentialBucketsVector(potentialBucketOptions);
+    ASSERT_EQ(potentialBuckets.size(),
+              (kSoftClosedBuckets.size() + kArchivedBuckets.size() + kNoneBucketExists));
+
+    // Check that all the buckets are correctly ordered by their action priority:
+    // kSoftClose -> kArchived -> kNone
+    // and check that all buckets have numMeasurements in increasing order.
+    for (size_t i = 0; i < kSoftClosedBuckets.size(); i++) {
+        ASSERT(getRolloverAction(potentialBuckets[i]->rolloverReason) ==
+               RolloverAction::kSoftClose);
+        if (i != kSoftClosedBuckets.size() - 1) {
+            ASSERT(potentialBuckets[i]->numMeasurements <=
+                   potentialBuckets[i + 1]->numMeasurements);
+        }
+    }
+    for (size_t i = kSoftClosedBuckets.size();
+         i < (kSoftClosedBuckets.size() + kArchivedBuckets.size());
+         i++) {
+        ASSERT(getRolloverAction(potentialBuckets[i]->rolloverReason) == RolloverAction::kArchive);
+        if (i != (kSoftClosedBuckets.size() + kArchivedBuckets.size()) - 1) {
+            ASSERT(potentialBuckets[i]->numMeasurements <=
+                   potentialBuckets[i + 1]->numMeasurements);
+        }
+    }
+    if (kNoneBucketExists) {
+        ASSERT(getRolloverAction(potentialBuckets[potentialBuckets.size() - 1]->rolloverReason) ==
+               RolloverAction::kNone);
+    }
+}
+
+std::vector<std::pair<std::vector<BSONObj>, RolloverReason>>
+BucketCatalogTest::_getMeasurementRolloverReasonVec(
+    const std::vector<std::vector<BSONObj>>& measurements, const RolloverReason& reason) const {
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> result;
+    result.reserve(measurements.size());
+    std::transform(
+        measurements.begin(),
+        measurements.end(),
+        std::back_inserter(result),
+        [&reason](const std::vector<BSONObj>& element) { return std::make_pair(element, reason); });
+    return result;
 }
 
 TEST_F(BucketCatalogTest, InsertIntoSameBucket) {
@@ -692,14 +1233,6 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucket) {
     ASSERT_OK(getWriteBatchStatus(*batch2));
 }
 
-TEST_F(BucketCatalogTest, GetMetadataReturnsEmptyDocOnMissingBucket) {
-    auto batch = _insertOneWithoutReopening(
-        _opCtx, *_bucketCatalog, _ns1, _uuid1, BSON(_timeField << Date_t::now()));
-    auto bucketId = batch->bucketId;
-    abort(*_bucketCatalog, batch, {ErrorCodes::TimeseriesBucketCleared, ""});
-    ASSERT_BSONOBJ_EQ(BSONObj(), getMetadata(*_bucketCatalog, bucketId));
-}
-
 TEST_F(BucketCatalogTest, InsertIntoDifferentBuckets) {
     auto batch1 =
         _insertOneWithoutReopening(_opCtx,
@@ -722,10 +1255,10 @@ TEST_F(BucketCatalogTest, InsertIntoDifferentBuckets) {
     ASSERT_NE(batch2, batch3);
 
     // Check metadata in buckets.
-    ASSERT_BSONOBJ_EQ(BSON(_metaField << "123"), getMetadata(*_bucketCatalog, batch1->bucketId));
+    ASSERT_BSONOBJ_EQ(BSON(_metaField << "123"), _getMetadata(*_bucketCatalog, batch1->bucketId));
     ASSERT_BSONOBJ_EQ(BSON(_metaField << BSONObj()),
-                      getMetadata(*_bucketCatalog, batch2->bucketId));
-    ASSERT(getMetadata(*_bucketCatalog, batch3->bucketId).isEmpty());
+                      _getMetadata(*_bucketCatalog, batch2->bucketId));
+    ASSERT(_getMetadata(*_bucketCatalog, batch3->bucketId).isEmpty());
 
     // Committing one bucket should only return the one document in that bucket and should not
     // affect the other bucket.
@@ -762,8 +1295,8 @@ TEST_F(BucketCatalogTest, InsertThroughDifferentCatalogsIntoDifferentBuckets) {
 
 TEST_F(BucketCatalogTest, InsertIntoSameBucketArray) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts1 = write_ops::internal::buildBatchedInsertContexts(
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts1 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -775,7 +1308,7 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucketArray) {
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx1 = batchedInsertContexts1[0];
 
-    auto batchedInsertContexts2 = write_ops::internal::buildBatchedInsertContexts(
+    auto batchedInsertContexts2 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -793,8 +1326,8 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucketArray) {
 
 TEST_F(BucketCatalogTest, InsertIntoSameBucketObjArray) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts1 = write_ops::internal::buildBatchedInsertContexts(
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts1 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -808,7 +1341,7 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucketObjArray) {
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx1 = batchedInsertContexts1[0];
 
-    auto batchedInsertContexts2 = write_ops::internal::buildBatchedInsertContexts(
+    auto batchedInsertContexts2 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -829,8 +1362,8 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucketObjArray) {
 
 TEST_F(BucketCatalogTest, InsertIntoSameBucketNestedArray) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts1 = write_ops::internal::buildBatchedInsertContexts(
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts1 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -844,7 +1377,7 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucketNestedArray) {
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx1 = batchedInsertContexts1[0];
 
-    auto batchedInsertContexts2 = write_ops::internal::buildBatchedInsertContexts(
+    auto batchedInsertContexts2 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -864,8 +1397,8 @@ TEST_F(BucketCatalogTest, InsertIntoSameBucketNestedArray) {
 
 TEST_F(BucketCatalogTest, InsertNullAndMissingMetaFieldIntoDifferentBuckets) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts1 = write_ops::internal::buildBatchedInsertContexts(
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts1 = bucket_catalog::buildBatchedInsertContexts(
         *_bucketCatalog,
         _uuid1,
         timeseriesOptions,
@@ -878,14 +1411,14 @@ TEST_F(BucketCatalogTest, InsertNullAndMissingMetaFieldIntoDifferentBuckets) {
     auto batchedInsertCtx1 = batchedInsertContexts1[0];
 
     auto batchedInsertContexts2 =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {BSON(_timeField << Date_t::now())},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+        bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                   _uuid1,
+                                                   timeseriesOptions,
+                                                   {BSON(_timeField << Date_t::now())},
+                                                   /*startIndex=*/0,
+                                                   /*numDocsToStage=*/1,
+                                                   /*docsToRetry=*/{},
+                                                   errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx2 = batchedInsertContexts2[0];
 
@@ -910,9 +1443,8 @@ TEST_F(BucketCatalogTest, InsertBetweenPrepareAndFinish) {
         _opCtx, *_bucketCatalog, _ns1, _uuid1, BSON(_timeField << Date_t::now()));
     ASSERT_NE(batch1, batch2) << batch1->toBSON() << batch2->toBSON();
 
-    (void)write_ops_utils::makeTimeseriesInsertOp(batch1,
-                                                  _ns1.makeTimeseriesBucketsNamespace(),
-                                                  getMetadata(*_bucketCatalog, batch1->bucketId));
+    (void)write_ops_utils::makeTimeseriesInsertOpFromBatch(batch1,
+                                                           _ns1.makeTimeseriesBucketsNamespace());
     finish(*_bucketCatalog, batch1);
     ASSERT(isWriteBatchFinished(*batch1));
 
@@ -924,7 +1456,7 @@ TEST_F(BucketCatalogTest, GetMetadataReturnsEmptyDoc) {
     auto batch = _insertOneWithoutReopening(
         _opCtx, *_bucketCatalog, _nsNoMeta, _uuidNoMeta, BSON(_timeField << Date_t::now()));
 
-    ASSERT_BSONOBJ_EQ(BSONObj(), getMetadata(*_bucketCatalog, batch->bucketId));
+    ASSERT_BSONOBJ_EQ(BSONObj(), _getMetadata(*_bucketCatalog, batch->bucketId));
 
     _commit(_nsNoMeta, batch, 0);
 }
@@ -1223,9 +1755,8 @@ TEST_F(BucketCatalogTest, DuplicateNewFieldNamesAcrossConcurrentBatches) {
     ASSERT_OK(prepareCommit(*_bucketCatalog, batch2, _getCollator(_ns2)));
     ASSERT_EQ(batch2->newFieldNamesToBeInserted.size(), 1) << batch2->toBSON();
     ASSERT_EQ(batch2->newFieldNamesToBeInserted.begin()->first, _timeField) << batch2->toBSON();
-    (void)write_ops_utils::makeTimeseriesInsertOp(batch2,
-                                                  _ns1.makeTimeseriesBucketsNamespace(),
-                                                  getMetadata(*_bucketCatalog, batch2->bucketId));
+    (void)write_ops_utils::makeTimeseriesInsertOpFromBatch(batch2,
+                                                           _ns1.makeTimeseriesBucketsNamespace());
     finish(*_bucketCatalog, batch2);
 
     // Batch 1 was the first batch to insert the time field, but by commit time it was already
@@ -1835,12 +2366,13 @@ TEST_F(BucketCatalogTest, ReopeningFailedDueToMinMaxCalculation) {
         [](const BSONObj& document) -> std::pair<Collection::SchemaValidationResult, Status> {
         return {Collection::SchemaValidationResult::kPass, Status::OK()};
     };
-    ASSERT_NOT_OK(_reopenBucket(autoColl.getCollection(),
-                                compressedBucketDoc,
-                                boost::none,
-                                boost::none,
-                                boost::none,
-                                boost::optional<BucketDocumentValidator>{alwaysPassValidator}));
+    ASSERT_NOT_OK(
+        _reopenBucket(autoColl.getCollection(),
+                      compressedBucketDoc,
+                      boost::none,
+                      boost::none,
+                      boost::none,
+                      boost::optional<internal::BucketDocumentValidator>{alwaysPassValidator}));
     auto stats = internal::getCollectionExecutionStats(*_bucketCatalog, _uuid1);
     ASSERT_EQ(1, stats->numBucketReopeningsFailedDueToMinMaxCalculation.load());
 }
@@ -1998,16 +2530,15 @@ TEST_F(BucketCatalogTest, OIDCollisionIsHandledForFrozenBucket) {
     // to trigger a collision of our frozen bucketID with the bucketID of the bucket we will
     // allocate.
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {doc},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {doc},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx = batchedInsertContexts[0];
 
@@ -2104,16 +2635,15 @@ TEST_F(BucketCatalogTest, FindOpenBucketsEmptyCatalog) {
 
 TEST_F(BucketCatalogTest, FindOpenBucketsReturnsBucket) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx = batchedInsertContexts[0];
     auto measurementTimestamp = std::get<1>(batchedInsertCtx.measurementsTimesAndIndices[0]);
@@ -2125,7 +2655,7 @@ TEST_F(BucketCatalogTest, FindOpenBucketsReturnsBucket) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     auto openBuckets =
         internal::findOpenBuckets(*_bucketCatalog->stripes[batchedInsertCtx.stripeNumber],
@@ -2137,16 +2667,15 @@ TEST_F(BucketCatalogTest, FindOpenBucketsReturnsBucket) {
 
 TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithBucketWithDirectWrite) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx = batchedInsertContexts[0];
     auto measurementTimestamp = std::get<1>(batchedInsertCtx.measurementsTimesAndIndices[0]);
@@ -2158,7 +2687,7 @@ TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithBucketWithDirectWrite) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     directWriteStart(_bucketCatalog->bucketStateRegistry, bucket.bucketId);
@@ -2174,16 +2703,15 @@ TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithBucketWithDirectWrite) {
 
 TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithClearedBucket) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx = batchedInsertContexts[0];
     auto measurementTimestamp = std::get<1>(batchedInsertCtx.measurementsTimesAndIndices[0]);
@@ -2195,7 +2723,7 @@ TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithClearedBucket) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     clear(*_bucketCatalog, bucket.bucketId.collectionUUID);
@@ -2211,16 +2739,15 @@ TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithClearedBucket) {
 
 TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithFrozenBucket) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
     auto batchedInsertCtx = batchedInsertContexts[0];
     auto measurementTimestamp = std::get<1>(batchedInsertCtx.measurementsTimesAndIndices[0]);
@@ -2232,7 +2759,7 @@ TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithFrozenBucket) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     freezeBucket(_bucketCatalog->bucketStateRegistry, bucket.bucketId);
@@ -2248,16 +2775,15 @@ TEST_F(BucketCatalogTest, CheckBucketStateAndCleanupWithFrozenBucket) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementNone) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2270,7 +2796,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementNone) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     ASSERT_EQ(bucket.rolloverReason, RolloverReason::kNone);
 
@@ -2278,7 +2804,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementNone) {
                                                                 _measurement,
                                                                 measurementTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 _storageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2289,16 +2815,15 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementNone) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeForward) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2311,7 +2836,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeForward) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     ASSERT_EQ(bucket.rolloverReason, RolloverReason::kNone);
 
@@ -2321,7 +2846,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeForward) {
                                                                 timeForwardMeasurement,
                                                                 forwardTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 _storageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2332,16 +2857,15 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeForward) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeBackward) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2354,7 +2878,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeBackward) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     ASSERT_EQ(bucket.rolloverReason, RolloverReason::kNone);
 
@@ -2365,7 +2889,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeBackward) {
                                                                 timeBackwardMeasurement,
                                                                 backwardTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 _storageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2376,16 +2900,15 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementTimeBackward) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCount) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2398,7 +2921,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCount) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     bucket.numMeasurements = gTimeseriesBucketMaxCount;
     ASSERT_EQ(bucket.rolloverReason, RolloverReason::kNone);
@@ -2407,7 +2930,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCount) {
                                                                 _measurement,
                                                                 measurementTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 _storageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2418,16 +2941,15 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCount) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSize) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2440,7 +2962,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSize) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     bucket.size = gTimeseriesBucketMaxSize;
     bucket.numMeasurements = gTimeseriesBucketMinCount;
@@ -2450,7 +2972,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSize) {
                                                                 _measurement,
                                                                 measurementTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 _storageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2461,16 +2983,15 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSize) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCachePressure) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2483,7 +3004,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCachePressure) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     bucket.size = gTimeseriesBucketMaxSize;
     bucket.numMeasurements = gTimeseriesBucketMinCount;
@@ -2493,7 +3014,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCachePressure) {
                                                                 _measurement,
                                                                 measurementTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 kLimitedStorageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2504,21 +3025,20 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementCachePressure) {
 
 TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSchemaChange) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
     auto measurementSchema1 =
         BSON(_timeField << Date_t::now() << _metaField << _metaValue << "metricField"
                         << "a");
     auto measurementSchema2 =
         BSON(_timeField << Date_t::now() << _metaField << _metaValue << "metricField" << 1);
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {measurementSchema1},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {measurementSchema1},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2531,10 +3051,10 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSchemaChange) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
-    auto updateStatus =
-        bucket.schema.update(measurementSchema1, timeseriesOptions.getMetaField(), nullptr);
+    auto updateStatus = bucket.schema.update(
+        measurementSchema1, timeseriesOptions.getMetaField(), _stringDataComparatorUnused);
     invariant(updateStatus == Schema::UpdateStatus::Updated);
     ASSERT_EQ(bucket.rolloverReason, RolloverReason::kNone);
 
@@ -2542,7 +3062,7 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSchemaChange) {
                                                                 measurementSchema2,
                                                                 measurementTimestamp,
                                                                 timeseriesOptions,
-                                                                nullptr,
+                                                                _stringDataComparatorUnused,
                                                                 _storageCacheSizeBytes,
                                                                 bucket,
                                                                 batchedInsertCtx.stats);
@@ -2553,16 +3073,15 @@ TEST_F(BucketCatalogTest, determineBucketRolloverForMeasurementSchemaChange) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsOpen) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2576,7 +3095,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsOpen) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     AllowQueryBasedReopening allowQueryBasedReopening = AllowQueryBasedReopening::kAllow;
@@ -2597,16 +3116,15 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsOpen) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsSoftClose) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2620,7 +3138,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsSoftClose) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     bucket.rolloverReason = RolloverReason::kTimeForward;
@@ -2642,16 +3160,15 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsSoftClose) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsSoftCloseNotSelected) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2665,7 +3182,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsSoftCloseNotSelected) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     bucket.rolloverReason = RolloverReason::kTimeForward;
@@ -2686,16 +3203,15 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsSoftCloseNotSelected) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsArchive) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2709,7 +3225,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsArchive) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     bucket.rolloverReason = RolloverReason::kTimeBackward;
@@ -2731,16 +3247,15 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsArchive) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsHardClose) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2759,7 +3274,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsHardClose) {
                                      batchedInsertCtx.key,
                                      batchedInsertCtx.options,
                                      measurementTimestamp,
-                                     nullptr,
+                                     _stringDataComparatorUnused,
                                      batchedInsertCtx.stats);
 
         bucket.rolloverReason = allHardClosedRolloverReasons[i];
@@ -2782,16 +3297,15 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsHardClose) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsUncommitted) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2810,7 +3324,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsUncommitted) {
                                      batchedInsertCtx.key,
                                      batchedInsertCtx.options,
                                      measurementTimestamp,
-                                     nullptr,
+                                     _stringDataComparatorUnused,
                                      batchedInsertCtx.stats);
 
         bucket.rolloverReason = allHardClosedRolloverReasons[i];
@@ -2838,16 +3352,15 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsUncommitted) {
 
 TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsOrder) {
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {_measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {_measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2861,7 +3374,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsOrder) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
     bucket1.rolloverReason = RolloverReason::kTimeBackward;
 
@@ -2872,7 +3385,7 @@ TEST_F(BucketCatalogTest, FindAndRolloverOpenBucketsOrder) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     AllowQueryBasedReopening allowQueryBasedReopening = AllowQueryBasedReopening::kAllow;
@@ -2897,16 +3410,15 @@ TEST_F(BucketCatalogTest, GetEligibleBucketAllocateBucket) {
     const auto& bucketsColl = autoColl.getCollection();
     auto measurement = BSON(_timeField << Date_t::now() << _metaField << _metaValue);
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<timeseries::bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2932,7 +3444,7 @@ TEST_F(BucketCatalogTest, GetEligibleBucketAllocateBucket) {
                                          bucketsColl->getDefaultCollator(),
                                          era,
                                          _storageCacheSizeBytes,
-                                         /*compressAndWriteBucketFunc=*/nullptr,
+                                         _compressBucketFuncUnused,
                                          batchedInsertCtx.stats,
                                          bucketOpenedDueToMetadata);
         ASSERT_EQ(0, bucket.size);
@@ -2950,16 +3462,15 @@ TEST_F(BucketCatalogTest, GetEligibleBucketOpenBucket) {
     const auto& bucketsColl = autoColl.getCollection();
     auto measurement = BSON(_timeField << Date_t::now() << _metaField << _metaValue);
     auto timeseriesOptions = _getTimeseriesOptions(_ns1);
-    std::vector<timeseries::write_ops::internal::WriteStageErrorAndIndex> errorsAndIndices;
-    auto batchedInsertContexts =
-        write_ops::internal::buildBatchedInsertContexts(*_bucketCatalog,
-                                                        _uuid1,
-                                                        timeseriesOptions,
-                                                        {measurement},
-                                                        /*startIndex=*/0,
-                                                        /*numDocsToStage=*/1,
-                                                        /*docsToRetry=*/{},
-                                                        errorsAndIndices);
+    std::vector<timeseries::bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    auto batchedInsertContexts = bucket_catalog::buildBatchedInsertContexts(*_bucketCatalog,
+                                                                            _uuid1,
+                                                                            timeseriesOptions,
+                                                                            {measurement},
+                                                                            /*startIndex=*/0,
+                                                                            /*numDocsToStage=*/1,
+                                                                            /*docsToRetry=*/{},
+                                                                            errorsAndIndices);
     ASSERT(errorsAndIndices.empty());
 
     auto batchedInsertCtx = batchedInsertContexts[0];
@@ -2973,7 +3484,7 @@ TEST_F(BucketCatalogTest, GetEligibleBucketOpenBucket) {
                                  batchedInsertCtx.key,
                                  batchedInsertCtx.options,
                                  measurementTimestamp,
-                                 /*comparator=*/nullptr,
+                                 _stringDataComparatorUnused,
                                  batchedInsertCtx.stats);
 
     ASSERT_EQ(1, _bucketCatalog->stripes[batchedInsertCtx.stripeNumber]->openBucketsByKey.size());
@@ -2996,7 +3507,7 @@ TEST_F(BucketCatalogTest, GetEligibleBucketOpenBucket) {
                               bucketsColl->getDefaultCollator(),
                               era,
                               _storageCacheSizeBytes,
-                              /*compressAndWriteBucketFunc=*/nullptr,
+                              _compressBucketFuncUnused,
                               batchedInsertCtx.stats,
                               bucketOpenedDueToMetadata);
         ASSERT_EQ(&bucketAllocated, &bucketFound);
@@ -3007,6 +3518,771 @@ TEST_F(BucketCatalogTest, GetEligibleBucketOpenBucket) {
                   _bucketCatalog->stripes[batchedInsertCtx.stripeNumber]->openBucketsById.size());
         ASSERT(!bucketOpenedDueToMetadata);
     }
+}
+
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsOneBatchNoMetafield) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(5) << "x" << 1),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(4) << "x" << 2),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(2) << "x" << 3),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(3) << "x" << 4),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(1) << "x" << 5)};
+
+    std::vector<size_t> correctIndexOrder{4, 2, 3, 1, 0};
+    stdx::unordered_set<size_t> expectedIndicesWithErrors;
+
+    // Test in a collection with a meta field.
+    _testBuildBatchedInsertContextWithoutMetaFieldInCollWithMetaField(
+        _ns1, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+
+    // Test in a collection without a meta field.
+    _testBuildBatchedInsertContextWithoutMetaFieldInCollWithoutMetaField(
+        _nsNoMeta, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsOneBatchWithMetafield) {
+    // Test with all possible BSONTypes.
+    std::vector<BSONType> allBSONTypes = _getFlattenedVector(std::vector<std::vector<BSONType>>{
+        _stringComponentBSONTypes, _nonStringComponentVariableBSONTypes, _constantBSONTypes});
+    for (BSONType type : allBSONTypes) {
+        _testBuildBatchedInsertContextOneBatchWithSameMetaFieldType(type);
+    }
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsMultipleBatchesWithMetafield) {
+    // Test with BSONTypes that aren't constant (so we create distinct batches).
+    // BSONTypes that have a StringData component.
+    for (BSONType type : _stringComponentBSONTypes) {
+        _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+            type, std::vector<StringData>{_metaValue, _metaValue2, _metaValue3});
+    }
+
+    // Test with BSONTypes that don't have a StringData type metaValue.
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        bsonTimestamp, std::vector<Timestamp>{Timestamp(1, 2), Timestamp(2, 3), Timestamp(3, 4)});
+    StatusWith<Date_t> date1 = dateFromISOString("2022-06-06T15:34:00.000Z");
+    StatusWith<Date_t> date2 = dateFromISOString("2022-06-06T16:34:00.000Z");
+    StatusWith<Date_t> date3 = dateFromISOString("2022-06-06T17:34:00.000Z");
+    ASSERT(date1.isOK() && date2.isOK() && date3.isOK());
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        Date, std::vector<Date_t>{date1.getValue(), date2.getValue(), date3.getValue()});
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        NumberInt, std::vector<int>{365, 10, 4});
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        NumberLong,
+        std::vector<long long>{0x0123456789aacdeff, 0x0fedcba987654321, 0x0123456789abcdefll});
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        NumberDecimal,
+        std::vector<Decimal128>{Decimal128("0.490"), Decimal128("0.30"), Decimal128("1.50")});
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        NumberDouble, std::vector<double>{1.5, 1.4, 1.3});
+    _testBuildBatchedInsertContextMultipleBatchesWithSameMetaFieldType(
+        jstOID,
+        std::vector<OID>{OID("00000000ff00000000000002"),
+                         OID("000000000000000000000002"),
+                         OID("0000000000fff00000000002")});
+    // We don't include bool because it only has two distinct meta values when this test requires 3.
+    // We don't include BinDataType because we don't have a constructor for
+    // std::vector<BinDataType>.
+    // We make up for this missing coverage for both BinDataType and Bool in the
+    // BuildBatchedInsertContextsMultipleBatchesWithDifferentMetafieldTypes1/2 unit tests.
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsMultipleBatchesWithDifferentMetafieldTypes1) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        _generateMeasurement(jstOID, Date_t::fromMillisSinceEpoch(113)).obj(),
+        _generateMeasurement(Code, Date_t::fromMillisSinceEpoch(105)).obj(),
+        _generateMeasurement(Code, Date_t::fromMillisSinceEpoch(107)).obj(),
+        _generateMeasurement(
+            BSON(_metaField << BSONDBRef(_metaValue2, OID("dbdbdbdbdbdbdbdbdbdbdbdb"))),
+            Date_t::fromMillisSinceEpoch(103))
+            .obj(),
+        _generateMeasurement(jstOID, Date_t::fromMillisSinceEpoch(104)).obj(),
+        _generateMeasurement(BSON(_metaField << _metaValue3), Date_t::fromMillisSinceEpoch(102))
+            .obj(),
+        _generateMeasurement(EOO, Date_t::fromMillisSinceEpoch(109)).obj(),
+        _generateMeasurement(String, Date_t::fromMillisSinceEpoch(108)).obj(),
+        _generateMeasurement(String, Date_t::fromMillisSinceEpoch(111)).obj(),
+        _generateMeasurement(BinData, Date_t::fromMillisSinceEpoch(204)).obj(),
+        _generateMeasurement(BSON(_metaField << BSONCode(_metaValue2)),
+                             Date_t::fromMillisSinceEpoch(200))
+            .obj(),
+        _generateMeasurement(BSON(_metaField << _metaValue3), Date_t::fromMillisSinceEpoch(101))
+            .obj(),
+        _generateMeasurement(BSON(_metaField << _metaValue3), Date_t::fromMillisSinceEpoch(121))
+            .obj(),
+        _generateMeasurement(String, Date_t::fromMillisSinceEpoch(65)).obj(),
+        _generateMeasurement(
+            BSON(_metaField << BSONDBRef(_metaValue2, OID("dbdbdbdbdbdbdbdbdbdbdbdb"))),
+            Date_t::fromMillisSinceEpoch(400))
+            .obj(),
+        _generateMeasurement(MinKey, Date_t::fromMillisSinceEpoch(250)).obj(),
+        _generateMeasurement(EOO, Date_t::fromMillisSinceEpoch(108)).obj(),
+        _generateMeasurement(MaxKey, Date_t::fromMillisSinceEpoch(231)).obj(),
+        _generateMeasurement(EOO, Date_t::fromMillisSinceEpoch(107)).obj(),
+        _generateMeasurement(BSON(_metaField << BSONBinData("", 1, BinDataGeneral)),
+                             Date_t::fromMillisSinceEpoch(204))
+            .obj(),
+    };
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[0])), /* for jstOID */
+        std::initializer_list<size_t>{4, 0});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[1])), /* for Code (_metaValue) */
+        std::initializer_list<size_t>{1, 2});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[10])), /* for Code (_metaValue2) */
+        std::initializer_list<size_t>{10});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[6])), /* for EOO */
+        std::initializer_list<size_t>{18, 16, 6});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[3])), /* for DBRef (_metaValue2) */
+        std::initializer_list<size_t>{3, 14});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[7])), /* for String (_metaValue) */
+        std::initializer_list<size_t>{13, 7, 8});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[5])), /* for String (_metaValue3) */
+        std::initializer_list<size_t>{11, 5, 12});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[9])), /* for BinData (0) */
+        std::initializer_list<size_t>{9});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[19])), /* for BinData (1) */
+        std::initializer_list<size_t>{19});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[15])), /* for MinKey */
+        std::initializer_list<size_t>{15});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[17])), /* for MaxKey */
+        std::initializer_list<size_t>{17});
+    stdx::unordered_set<size_t> expectedIndicesWithErrors;
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsMultipleBatchesWithDifferentMetafieldTypes2) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        _generateMeasurement(BSON(_metaField << BSONSymbol(_metaValue2)),
+                             Date_t::fromMillisSinceEpoch(382))
+            .obj(),
+        _generateMeasurement(BSON(_metaField << BSONCodeWScope(_metaValue2, BSON("x" << 1))),
+                             Date_t::fromMillisSinceEpoch(493))
+            .obj(),
+        _generateMeasurement(Object, Date_t::fromMillisSinceEpoch(212)).obj(),
+        _generateMeasurement(BSON(_metaField << BSONSymbol(_metaValue2)),
+                             Date_t::fromMillisSinceEpoch(284))
+            .obj(),
+        _generateMeasurement(BSON(_metaField << BSONCodeWScope(_metaValue2, BSON("x" << 1))),
+                             Date_t::fromMillisSinceEpoch(958))
+            .obj(),
+        _generateMeasurement(Object, Date_t::fromMillisSinceEpoch(103)).obj(),
+        _generateMeasurement(BSON(_metaField << BSON("0" << _metaValue2)),
+                             Date_t::fromMillisSinceEpoch(492))
+            .obj(),
+        _generateMeasurement(Object, Date_t::fromMillisSinceEpoch(365)).obj(),
+        _generateMeasurement(jstNULL, Date_t::fromMillisSinceEpoch(590)).obj(),
+        _generateMeasurement(Array, Date_t::fromMillisSinceEpoch(204)).obj(),
+        _generateMeasurement(jstNULL, Date_t::fromMillisSinceEpoch(58)).obj(),
+        _generateMeasurement(BSON(_metaField << BSONCodeWScope(_metaValue3, BSON("x" << 1))),
+                             Date_t::fromMillisSinceEpoch(93))
+            .obj(),
+        _generateMeasurement(BSON(_metaField << BSONCodeWScope(_metaValue3, BSON("x" << 1))),
+                             Date_t::fromMillisSinceEpoch(304))
+            .obj(),
+        _generateMeasurement(jstNULL, Date_t::fromMillisSinceEpoch(384)).obj(),
+        _generateMeasurement(CodeWScope, Date_t::fromMillisSinceEpoch(888)).obj(),
+        _generateMeasurement(Array, Date_t::fromMillisSinceEpoch(764)).obj(),
+        _generateMeasurement(Array, Date_t::fromMillisSinceEpoch(593)).obj(),
+    };
+
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[0])), /* for Symbol */
+        std::initializer_list<size_t>{3, 0});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[1])), /* for CodeWScope (_metaValue2) */
+        std::initializer_list<size_t>{1, 4});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[14])), /* for CodeWScope (_metaValue) */
+        std::initializer_list<size_t>{14});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[11])), /* for CodeWScope (_metaValue3) */
+        std::initializer_list<size_t>{11, 12});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[2])), /* for Object (_metaValue) */
+        std::initializer_list<size_t>{5, 2, 7});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[6])), /* for Object (_metaValue2) */
+        std::initializer_list<size_t>{6});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[8])), /* for jstNULL */
+        std::initializer_list<size_t>{10, 13, 8});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[9])), /* for Array */
+        std::initializer_list<size_t>{9, 16, 15});
+    stdx::unordered_set<size_t> expectedIndicesWithErrors;
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsMultipleBatchesWithDifferentMetafieldTypes3) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        _generateMeasurement(Date, Date_t::fromMillisSinceEpoch(113)).obj(),
+        _generateMeasurement(RegEx, Date_t::fromMillisSinceEpoch(105)).obj(),
+        _generateMeasurement(RegEx, Date_t::fromMillisSinceEpoch(107)).obj(),
+        _generateMeasurement(Undefined, Date_t::fromMillisSinceEpoch(103)).obj(),
+        _generateMeasurement(BSON(_metaField << true), Date_t::fromMillisSinceEpoch(104)).obj(),
+        _generateMeasurement(BSON(_metaField << true), Date_t::fromMillisSinceEpoch(102)).obj(),
+        _generateMeasurement(BSON(_metaField << false), Date_t::fromMillisSinceEpoch(104)).obj(),
+        _generateMeasurement(BSON(_metaField << false), Date_t::fromMillisSinceEpoch(102)).obj(),
+        _generateMeasurement(Undefined, Date_t::fromMillisSinceEpoch(102)).obj(),
+        _generateMeasurement(EOO, Date_t::fromMillisSinceEpoch(109)).obj(),
+        _generateMeasurement(NumberInt, Date_t::fromMillisSinceEpoch(108)).obj(),
+        _generateMeasurement(NumberInt, Date_t::fromMillisSinceEpoch(111)).obj(),
+        _generateMeasurement(BSON(_metaField << 2.3), Date_t::fromMillisSinceEpoch(204)).obj(),
+        _generateMeasurement(NumberLong, Date_t::fromMillisSinceEpoch(200)).obj(),
+        _generateMeasurement(BSON(_metaField << 2.1), Date_t::fromMillisSinceEpoch(101)).obj(),
+        _generateMeasurement(BSON(_metaField << 2.3), Date_t::fromMillisSinceEpoch(121)).obj(),
+        _generateMeasurement(Date, Date_t::fromMillisSinceEpoch(65)).obj(),
+        _generateMeasurement(BSON(_metaField << Decimal128("0.4")),
+                             Date_t::fromMillisSinceEpoch(400))
+            .obj(),
+        _generateMeasurement(BSON(_metaField << Decimal128("0.3")),
+                             Date_t::fromMillisSinceEpoch(400))
+            .obj(),
+        _generateMeasurement(RegEx, Date_t::fromMillisSinceEpoch(108)).obj(),
+        _generateMeasurement(bsonTimestamp, Date_t::fromMillisSinceEpoch(231)).obj(),
+        _generateMeasurement(EOO, Date_t::fromMillisSinceEpoch(107)).obj(),
+    };
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[0])), /* for Date */
+        std::initializer_list<size_t>{16, 0});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[1])), /* for RegEx */
+        std::initializer_list<size_t>{1, 2, 19});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[3])), /* for Undefined  */
+        std::initializer_list<size_t>{8, 3});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[4])), /* for Bool (true) */
+        std::initializer_list<size_t>{5, 4});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[6])), /* for Bool (false) */
+        std::initializer_list<size_t>{7, 6});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[9])), /* for EOO  */
+        std::initializer_list<size_t>{21, 9});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[10])), /* for NumberInt */
+        std::initializer_list<size_t>{10, 11});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[12])), /* for NumberDouble (2.3) */
+        std::initializer_list<size_t>{15, 12});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[13])), /* for NumberLong */
+        std::initializer_list<size_t>{13});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[14])), /* for NumberDouble (2.1) */
+        std::initializer_list<size_t>{14});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[17])), /* for NumberDecimal (0.4) */
+        std::initializer_list<size_t>{17});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[18])), /* for NumberDecimal (0.3) */
+        std::initializer_list<size_t>{18});
+    metaFieldMetadataToCorrectIndexOrderMap.try_emplace(
+        *(getBucketMetadata(userMeasurementsBatch[20])), /* for bsonTimestamp */
+        std::initializer_list<size_t>{20});
+    stdx::unordered_set<size_t> expectedIndicesWithErrors;
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsNoMetaReportsMalformedMeasurements) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        BSON("x" << 1),  // Malformed measurement, missing time field
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(4) << "x" << 2),
+        BSON("x" << 3),  // Malformed measurement, missing time field
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(3) << "x" << 4),
+        BSON("x" << 5),  // Malformed measurement, missing time field
+    };
+    std::vector<size_t> correctIndexOrder{3, 1};
+    stdx::unordered_set<size_t> expectedIndicesWithErrors{0, 2, 4};
+
+    // Test in a collection with a meta field.
+    _testBuildBatchedInsertContextWithoutMetaFieldInCollWithMetaField(
+        _ns1, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+
+    // Test in a collection without a meta field.
+    _testBuildBatchedInsertContextWithoutMetaFieldInCollWithoutMetaField(
+        _nsNoMeta, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+}
+
+TEST_F(BucketCatalogTest,
+       BuildBatchedInsertContextsWithConstantBSONTypeMetaReportsMalformedMeasurements) {
+    for (BSONType type : _constantBSONTypes) {
+        std::vector<BSONObj> emptyMetaValues{};
+        _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(type, emptyMetaValues);
+    }
+}
+
+TEST_F(BucketCatalogTest,
+       BuildBatchedInsertContextsWithNonConstantBSONTypeMetaReportsMalformedMeasurements) {
+    // For non-string component meta field types, we directly have to declare two meta values.
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        bsonTimestamp,
+        std::vector<BSONObj>{BSON(_metaField << Timestamp(1, 2)),
+                             BSON(_metaField << Timestamp(2, 3))});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        NumberInt, std::vector<BSONObj>{BSON(_metaField << 1), BSON(_metaField << 2)});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        NumberLong,
+        std::vector<BSONObj>{BSON(_metaField << 0x0123456789abcdefll),
+                             BSON(_metaField << 0x0123456789abcdeell)});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        NumberDecimal,
+        std::vector<BSONObj>{BSON(_metaField << Decimal128("1.45")),
+                             BSON(_metaField << Decimal128("0.987"))});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        NumberDouble, std::vector<BSONObj>{BSON(_metaField << 1.4), BSON(_metaField << 8.6)});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        jstOID,
+        std::vector<BSONObj>{BSON(_metaField << OID("649f0704230f18da067519c4")),
+                             BSON(_metaField << OID("64a33d9cdf56a62781061048"))});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        Bool, std::vector<BSONObj>{BSON(_metaField << true), BSON(_metaField << false)});
+    _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(
+        BinData,
+        std::vector<BSONObj>{BSON(_metaField << BSONBinData("", 0, BinDataGeneral)),
+                             BSON(_metaField << BSONBinData("\x69\xb7", 2, BinDataGeneral))});
+
+    // For string component meta field types, we can don't need to directly declare the values; we
+    // can just use two different strings.
+    for (BSONType type : _stringComponentBSONTypes) {
+        std::vector<BSONObj> stringMetaValues{BSON(_metaField << _metaValue),
+                                              BSON(_metaField << _metaValue2)};
+        _testBuildBatchedInsertContextWithMalformedMeasurementsWithMetaField(type,
+                                                                             stringMetaValues);
+    }
+}
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsAllMeasurementsErrorNoMeta) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        BSON("x" << 2),  // Malformed measurement, missing time field
+        BSON("x" << 3),  // Malformed measurement, missing time field
+    };
+    std::vector<size_t> correctIndexOrder;
+    stdx::unordered_set<size_t> expectedIndicesWithErrors{0, 1};
+
+    // Test in a collection with a meta field.
+    _testBuildBatchedInsertContextWithoutMetaFieldInCollWithMetaField(
+        _ns1, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+
+    // Test in a collection without a meta field.
+    _testBuildBatchedInsertContextWithoutMetaFieldInCollWithoutMetaField(
+        _nsNoMeta, userMeasurementsBatch, correctIndexOrder, expectedIndicesWithErrors);
+};
+
+TEST_F(BucketCatalogTest, BuildBatchedInsertContextsAllMeasurementsErrorWithMeta) {
+    std::vector<BSONObj> userMeasurementsBatch{
+        BSON(_metaField << _metaValue << "x" << 2),  // Malformed measurement, missing time field
+        BSON(_metaField << _metaValue << "x" << 3),  // Malformed measurement, missing time field
+    };
+    stdx::unordered_map<bucket_catalog::BucketMetadata, std::vector<size_t>>
+        metaFieldMetadataToCorrectIndexOrderMap;
+    stdx::unordered_set<size_t> expectedIndicesWithErrors{0, 1};
+    _testBuildBatchedInsertContextWithMetaField(
+        userMeasurementsBatch, metaFieldMetadataToCorrectIndexOrderMap, expectedIndicesWithErrors);
+};
+
+TEST_F(BucketCatalogTest, StageInsertBatchFillsUpSingleBucketWithMetaField) {
+    std::vector<BSONObj> batchOfMeasurementsTimeseriesBucketMaxCount =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kNone});
+    std::vector<size_t> numWriteBatches{1};
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsTimeseriesBucketMaxCount, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchFillsUpSingleBucketWithoutMetaField) {
+    std::vector<BSONObj> batchOfMeasurementsTimeseriesBucketMaxCountNoMetaField =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = bucket_catalog::RolloverReason::kNone, .metaValueType = boost::none});
+    std::vector<size_t> numWriteBatches{1};
+
+    // Inserting a batch of measurements without meta field values into a collection without a
+    // meta field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta,
+        _uuidNoMeta,
+        batchOfMeasurementsTimeseriesBucketMaxCountNoMetaField,
+        numWriteBatches);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsTimeseriesBucketMaxCountNoMetaField, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonCountWithMetaField) {
+    auto batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount)});
+
+    // batchOfMeasurements will be 2 * gTimeseriesBucketMaxCount measurements with all the
+    // measurements having the same meta field and time, which means we should have two buckets.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchWithMetaField(_ns1, _uuid1, batchOfMeasurementsWithCount, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonCountWithoutMetaField) {
+    auto batchOfMeasurementsWithCountNoMetaField = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount),
+         .metaValueType = boost::none});
+
+    // batchOfMeasurements will be 2 * gTimeseriesBucketMaxCount measurements with all the
+    // measurements having the same meta field and time, which means we should have two buckets.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta, _uuidNoMeta, batchOfMeasurementsWithCountNoMetaField, numWriteBatches);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithCountNoMetaField, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonTimeForwardWithMetaField) {
+    // Max bucket size with only the last measurement having kTimeForward.
+    auto batchOfMeasurementsWithTimeForwardAtEnd = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kTimeForward});
+
+    // The last measurement in batchOfMeasurementsWithTimeForwardAtEnd will have a timestamp outside
+    // of the bucket range encompassing the previous measurements, which means that this
+    // measurement will be in a different bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithTimeForwardAtEnd, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonTimeForwardWithoutMetaField) {
+    // Max bucket size with measurements[1:gTimeseriesBucketMaxCount] having kTimeForward.
+    auto batchOfMeasurementsWithTimeForwardAfterFirstMeasurementNoMetaField =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = bucket_catalog::RolloverReason::kTimeForward,
+             .idxWithDiffMeasurement = 1,
+             .metaValueType = boost::none});
+
+    // The last measurement in batchOfMeasurementsWithTimeForwardAtEnd will have a timestamp outside
+    // of the bucket range encompassing the previous measurements, which means that this
+    // measurement will be in a different bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta,
+        _uuidNoMeta,
+        batchOfMeasurementsWithTimeForwardAfterFirstMeasurementNoMetaField,
+        numWriteBatches);
+
+    // 50 measurements with measurements[25:50] having kTimeForward.
+    auto batchOfMeasurementsWithTimeForwardInMiddle = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kTimeForward,
+         .numMeasurements = 50,
+         .idxWithDiffMeasurement = 25,
+         .metaValueType = boost::none});
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithTimeForwardInMiddle, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonSchemaChangeWithMetaField) {
+    // Max bucket size with only the last measurement having kSchemaChange.
+    auto batchOfMeasurementsWithSchemaChangeAtEnd = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kSchemaChange});
+
+    // The last measurement in batchOfMeasurementsWithSchemaChangeAtEnd will have a int rather than
+    // a string for field "deathGrips", which means this measurement will be in a different
+    // bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithSchemaChangeAtEnd, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonSchemaChangeWithoutMetaField) {
+    // Max bucket size with measurements[1:gTimeseriesBucketMaxCount] having kSchemaChange.
+    auto batchOfMeasurementsWithSchemaChangeAfterFirstMeasurementNoMetaField =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = bucket_catalog::RolloverReason::kSchemaChange,
+             .idxWithDiffMeasurement = 1,
+             .metaValueType = boost::none});
+
+    // The last measurement in batchOfMeasurementsWithSchemaChangeAtEnd will have a int rather than
+    // a string for field "deathGrips", which means this measurement will be in a different
+    // bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta,
+        _uuidNoMeta,
+        batchOfMeasurementsWithSchemaChangeAfterFirstMeasurementNoMetaField,
+        numWriteBatches);
+
+    // 50 measurements with measurements[25:50] having kSchemaChange.
+    auto batchOfMeasurementsWithTimeForwardInMiddle = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kSchemaChange,
+         .numMeasurements = 50,
+         .idxWithDiffMeasurement = 25,
+         .metaValueType = boost::none});
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithTimeForwardInMiddle, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonSizeWithMetaField) {
+    auto batchOfMeasurementsWithSize =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kSize});
+
+    // The last measurement will exceed the size that the bucket can store, which will mean it
+    // should be in a different bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchWithMetaField(_ns1, _uuid1, batchOfMeasurementsWithSize, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonSizeWithoutMetaField) {
+    auto batchOfMeasurementsWithSizeNoMetaField = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kSize, .metaValueType = boost::none});
+
+    // The last measurement will exceed the size that the bucket can store, which will mean it
+    // should be in a different bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta, _uuidNoMeta, batchOfMeasurementsWithSizeNoMetaField, numWriteBatches);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithSizeNoMetaField, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonCachePressureWithMetaField) {
+    // Artificially lower _storageCacheSizeBytes so we can simulate kCachePressure.
+    _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes;
+
+    std::vector<BSONObj> batchOfMeasurementsWithCachePressure =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = bucket_catalog::RolloverReason::kCachePressure});
+
+    // The last measurement will exceed the size that the bucket can store. Coupled with the lowered
+    // cache size, we will trigger kCachePressure, so the measurement will be in a different bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithCachePressure, numWriteBatches);
+
+    // Reset _storageCacheSizeBytes back to a representative value.
+    _storageCacheSizeBytes = kDefaultStorageCacheSizeBytes;
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonCachePressureWithoutMetaField) {
+    // Artificially lower _storageCacheSizeBytes so we can simulate kCachePressure.
+    _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes;
+    std::vector<BSONObj> batchOfMeasurementsWithCachePressureNoMetaField =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = bucket_catalog::RolloverReason::kCachePressure,
+             .metaValueType = boost::none});
+
+    // The last measurement will exceed the size that the bucket can store. Coupled with the lowered
+    // cache size, we will trigger kCachePressure, so the measurement will be in a different bucket.
+    std::vector<size_t> numWriteBatches{2};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta, _uuidNoMeta, batchOfMeasurementsWithCachePressureNoMetaField, numWriteBatches);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, batchOfMeasurementsWithCachePressureNoMetaField, numWriteBatches);
+
+    // Reset _storageCacheSizeBytes back to a representative value.
+    _storageCacheSizeBytes = kDefaultStorageCacheSizeBytes;
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverMixed) {
+    std::vector<BSONObj> batchOfMeasurements =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kNone,
+                                                 .numMeasurements = 50,
+                                                 .timeValue = Date_t::now()});
+
+    auto batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount),
+         .timeValue = Date_t::now() + Seconds(1)});
+
+    auto batchOfMeasurementsWithTimeForward = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kTimeForward,
+         .numMeasurements = 50,
+         .idxWithDiffMeasurement = 25,
+         .timeValue = Date_t::now() + Seconds(2)});
+
+    std::vector<BSONObj> mixedRolloverReasonsMeasurements = _getFlattenedVector(
+        std::vector<std::vector<BSONObj>>({batchOfMeasurements,
+                                           batchOfMeasurementsWithCount,
+                                           batchOfMeasurementsWithTimeForward}));
+    ASSERT_EQ(mixedRolloverReasonsMeasurements.size(),
+              batchOfMeasurements.size() + batchOfMeasurementsWithCount.size() +
+                  batchOfMeasurementsWithTimeForward.size());
+
+    // The first bucket will consist of all 50 measurements from batchOfMeasurements.
+    // We will then insert gTimeseriesBucketMaxCount - 50 measurements from
+    // batchOfMeasurementsWithCountA before rolling over due to kCount.
+    // We will create a second bucket that will have the gTimeseriesBucketMaxCount measurements
+    // from batchOfMeasurementsWithCount, and then roll over due to kCount.
+    // We will then create a third bucket that will have the last 50 measurements from
+    // batchOfMeasurementsWithCount.
+    // We will then insert 25 measurements from batchOfMeasurementsWithTimeForward into the third
+    // bucket before encountering kTimeForward and add the remaining 25 measurements into a fourth
+    // bucket.
+    std::vector<size_t> numWriteBatches{4};
+
+    // Test in a collection without a meta field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta, _uuidNoMeta, mixedRolloverReasonsMeasurements, numWriteBatches);
+
+    // Test in a collection with a meta field.
+    _testStageInsertBatchWithMetaField(
+        _ns1, _uuid1, mixedRolloverReasonsMeasurements, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverMixedWithNoMeta) {
+    auto batchOfMeasurementsWithSize =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kSize,
+                                                 .timeValue = Date_t::now(),
+                                                 .metaValueType = boost::none});
+
+    std::vector<BSONObj> batchOfMeasurements =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kNone,
+                                                 .numMeasurements = 50,
+                                                 .timeValue = Date_t::now() + Seconds(1),
+                                                 .metaValueType = boost::none});
+
+    auto batchOfMeasurementsWithSchemaChange = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kSchemaChange,
+         .timeValue = Date_t::now() + Seconds(2),
+         .metaValueType = boost::none});
+
+    std::vector<BSONObj> mixedRolloverReasonsMeasurements =
+        _getFlattenedVector(std::vector<std::vector<BSONObj>>{
+            batchOfMeasurementsWithSize, batchOfMeasurements, batchOfMeasurementsWithSchemaChange});
+    ASSERT_EQ(mixedRolloverReasonsMeasurements.size(),
+              batchOfMeasurementsWithSize.size() + batchOfMeasurements.size() +
+                  batchOfMeasurementsWithSchemaChange.size());
+
+    // The first bucket will consist of 124 measurements before we rollover due to kSize from
+    // batchOfMeasurementsWithSize.
+    // The second bucket will consist of one measurement from batchOfMeasurementsWithSize with
+    // the 50 measurements from batchOfMeasurements. We will then insert
+    // gTimeseriesBucketMaxCount - 50 - 1 measurements from batchOfMeasurementsWithSchemaChange
+    // into this second bucket, and rollover due to kCount. The third bucket will be created and
+    // we will insert the measurements
+    // batchOfMeasurementsWithSchemaChange[gTimeseriesBucketMaxCount - 50 -
+    // 1:gTimeseriesBucketMaxCount-1].
+    // Finally, the fourth bucket created to insert the last measurement
+    // batchOfMeasurementsWithSchemaChange due to kSchemaChange.
+    std::vector<size_t> numWriteBatches{4};
+
+    // Test in a collection without a meta field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta, _uuidNoMeta, mixedRolloverReasonsMeasurements, numWriteBatches);
+
+    // Test in collection with a meta field.
+    _testStageInsertBatchWithoutMetaFieldInCollWithMetaField(
+        _ns1, _uuid1, mixedRolloverReasonsMeasurements, numWriteBatches);
+}
+
+TEST_F(BucketCatalogTest, StageInsertBatchHandlesRolloverReasonMixedWithCachePressure) {
+    // Artificially lower _storageCacheSizeBytes so we can simulate kCachePressure.
+    _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes;
+
+    auto batchOfMeasurements =
+        _generateMeasurementsWithRolloverReason({.reason = bucket_catalog::RolloverReason::kNone,
+                                                 .numMeasurements = 10,
+                                                 .timeValue = Date_t::now()});
+
+    std::vector<BSONObj> batchOfMeasurementsWithTimeForward =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = bucket_catalog::RolloverReason::kTimeForward,
+             .numMeasurements = 10,
+             .idxWithDiffMeasurement = 5,
+             .timeValue = Date_t::now() + Seconds(1)});
+
+    auto batchOfMeasurementsWithCachePressure = _generateMeasurementsWithRolloverReason(
+        {.reason = bucket_catalog::RolloverReason::kCachePressure,
+         .timeValue = Date_t::now() + Seconds(2)});
+
+    std::vector<BSONObj> mixedRolloverReasonsMeasurements = _getFlattenedVector(
+        std::vector<std::vector<BSONObj>>{batchOfMeasurements,
+                                          batchOfMeasurementsWithTimeForward,
+                                          batchOfMeasurementsWithCachePressure});
+    ASSERT_EQ(mixedRolloverReasonsMeasurements.size(),
+              batchOfMeasurements.size() + batchOfMeasurementsWithTimeForward.size() +
+                  batchOfMeasurementsWithCachePressure.size());
+
+    // The first bucket will consist of 10 measurements from batchOfMeasurements. We will then
+    // insert 5 measurements from batchOfMeasurementsWithTimeForward until we rollover due to
+    // kTimeForward.
+    // The second bucket will consist of the remaining 5 measurements from
+    // batchOfMeasurementsWithTimeForward. We will then insert 4 measurements from
+    // batchOfMeasurementsWithCachePressure into the second bucket and will rollover due to
+    // kCachePressure.
+    // We will insert the last measurement from batchOfMeasurementsWithCachePressure into a
+    // third bucket.
+    std::vector<size_t> numWriteBatches{3};
+
+    // Test in a collection without a meta field.
+    _testStageInsertBatchInCollWithoutMetaField(
+        _nsNoMeta, _uuidNoMeta, mixedRolloverReasonsMeasurements, numWriteBatches);
+
+    // Test in collection with a meta field.
+    _testStageInsertBatchWithMetaField(
+        _ns1, _uuid1, mixedRolloverReasonsMeasurements, numWriteBatches);
+
+    // Reset _storageCacheSizeBytes back to a representative value.
+    _storageCacheSizeBytes = kDefaultStorageCacheSizeBytes;
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketFillsUpSingleBucketWithMetaField) {
@@ -3026,18 +4302,19 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketFillsUpSingleBucketW
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketFillsUpSingleBucketWithoutMetaField) {
+    std::vector<BSONObj> batchOfMeasurementsTimeseriesBucketMaxCount =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = RolloverReason::kNone, .metaValueType = boost::none});
+    std::vector<size_t> curBatchedInsertContextsIndex{0};
+    std::vector<size_t> numMeasurementsInWriteBatch{static_cast<size_t>(gTimeseriesBucketMaxCount)};
+
     // Inserting a batch of measurements without meta field values into a collection without a meta
     // field.
-    std::vector<BSONObj> batchOfMeasurementsTimeseriesBucketMaxCountNoMetaField =
-        _generateMeasurementsWithRolloverReason(
-            {.reason = RolloverReason::kNone, .metaValue = boost::none});
-    std::vector<size_t> currBatchedInsertContextsIndex{0};
-    std::vector<size_t> numMeasurementsInWriteBatch{static_cast<size_t>(gTimeseriesBucketMaxCount)};
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
         _nsNoMeta,
         _uuidNoMeta,
-        batchOfMeasurementsTimeseriesBucketMaxCountNoMetaField,
-        currBatchedInsertContextsIndex,
+        batchOfMeasurementsTimeseriesBucketMaxCount,
+        curBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
 
@@ -3046,56 +4323,57 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketFillsUpSingleBucketW
     _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         _ns1,
         _uuid1,
-        batchOfMeasurementsTimeseriesBucketMaxCountNoMetaField,
-        currBatchedInsertContextsIndex,
+        batchOfMeasurementsTimeseriesBucketMaxCount,
+        curBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverCountWithMetaField) {
-    std::vector<BSONObj> batchOfMeasurementsWithCount =
-        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kCount});
     // batchOfMeasurements will be 2 * gTimeseriesBucketMaxCount measurements with all the
     // measurements having the same meta field and time, which means we should have two buckets.
+    std::vector<BSONObj> batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount)});
     std::vector<size_t> numMeasurementsInWriteBatch{static_cast<size_t>(gTimeseriesBucketMaxCount),
                                                     static_cast<size_t>(gTimeseriesBucketMaxCount)};
-    std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
 
     // Inserting a batch of measurements with meta field values into a collection with a meta field.
     _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
                                                          _uuid1,
                                                          batchOfMeasurementsWithCount,
-                                                         currBatchedInsertContextsIndex,
+                                                         curBatchedInsertContextsIndex,
                                                          numMeasurementsInWriteBatch,
                                                          /*numBatchedInsertContexts=*/1);
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverCountWithoutMetaField) {
-    // Inserting a batch of measurements without meta field values into a collection without a meta
-    // field.
-    std::vector<BSONObj> batchOfMeasurementsWithCountNoMetaField =
-        _generateMeasurementsWithRolloverReason(
-            {.reason = RolloverReason::kCount, .metaValue = boost::none});
     // batchOfMeasurements will be 2 * gTimeseriesBucketMaxCount measurements with all the
     // measurements having the same meta field and time, which means we should have two buckets.
+    std::vector<BSONObj> batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount),
+         .metaValueType = boost::none});
     std::vector<size_t> numMeasurementsInWriteBatch{static_cast<size_t>(gTimeseriesBucketMaxCount),
                                                     static_cast<size_t>(gTimeseriesBucketMaxCount)};
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
 
-    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
-        _nsNoMeta,
-        _uuidNoMeta,
-        batchOfMeasurementsWithCountNoMetaField,
-        currBatchedInsertContextsIndex,
-        numMeasurementsInWriteBatch,
-        /*numBatchedInsertContexts=*/1);
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
+                                                                  _uuidNoMeta,
+                                                                  batchOfMeasurementsWithCount,
+                                                                  currBatchedInsertContextsIndex,
+                                                                  numMeasurementsInWriteBatch,
+                                                                  /*numBatchedInsertContexts=*/1);
 
     // Inserting a batch of measurements without meta field values into a collection with a meta
     // field.
     _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         _ns1,
         _uuid1,
-        batchOfMeasurementsWithCountNoMetaField,
+        batchOfMeasurementsWithCount,
         currBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
@@ -3103,14 +4381,13 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverCount
 
 TEST_F(BucketCatalogTest,
        StageInsertBatchIntoEligibleBucketHandlesRolloverTimeForwardWithMetaField) {
-    // Max bucket size with only the last measurement having kTimeForward.
-    std::vector<BSONObj> batchOfMeasurementsWithTimeForwardAtEnd =
-        _generateMeasurementsWithRolloverReason(
-            {.reason = RolloverReason::kTimeForward, .metaValue = _metaValue});
-
     // The last measurement in batchOfMeasurementsWithTimeForwardAtEnd will have a timestamp outside
     // of the bucket range encompassing the previous measurements, which means that this
     // measurement will be in a different bucket.
+    // Max bucket count with only the last measurement having kTimeForward.
+    std::vector<BSONObj> batchOfMeasurementsWithTimeForwardAtEnd =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kTimeForward});
+
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
     std::vector<size_t> numMeasurementsInWriteBatchAtEnd{
         static_cast<size_t>(gTimeseriesBucketMaxCount - 1), 1};
@@ -3127,32 +4404,34 @@ TEST_F(BucketCatalogTest,
 TEST_F(BucketCatalogTest,
        StageInsertBatchIntoEligibleBucketHandlesRolloverTimeForwardWithoutMetaField) {
     // Max bucket size with measurements[1:gTimeseriesBucketMaxCount] having kTimeForward.
-    // Inserting a batch of measurements without meta field values into a collection without a meta
-    // field.
-    auto batchOfMeasurementsWithTimeForwardAfterFirstMeasurementNoMetaField =
+    auto batchOfMeasurementsWithTimeForwardAfterFirstMeasurement =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kTimeForward,
                                                  .idxWithDiffMeasurement = 1,
-                                                 .metaValue = boost::none});
+                                                 .metaValueType = boost::none});
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
     std::vector<size_t> numMeasurementsInWriteBatchAfterFirstMeasurement{
         1, static_cast<size_t>(gTimeseriesBucketMaxCount - 1)};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
         _nsNoMeta,
         _uuidNoMeta,
-        batchOfMeasurementsWithTimeForwardAfterFirstMeasurementNoMetaField,
+        batchOfMeasurementsWithTimeForwardAfterFirstMeasurement,
         currBatchedInsertContextsIndex,
         numMeasurementsInWriteBatchAfterFirstMeasurement,
         /*numBatchedInsertContexts=*/1);
 
     // 50 measurements with measurements[25:50] having kTimeForward.
-    // Inserting a batch of measurements without meta field values into a collection with a meta
-    // field.
     std::vector<size_t> numMeasurementsInWriteBatchInMiddle{25, 25};
     auto batchOfMeasurementsWithTimeForwardInMiddle =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kTimeForward,
                                                  .numMeasurements = 50,
                                                  .idxWithDiffMeasurement = 25,
-                                                 .metaValue = boost::none});
+                                                 .metaValueType = boost::none});
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
     _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         _ns1,
         _uuid1,
@@ -3164,13 +4443,13 @@ TEST_F(BucketCatalogTest,
 
 TEST_F(BucketCatalogTest,
        StageInsertBatchIntoEligibleBucketHandlesRolloverSchemaChangeWithMetaField) {
-    // Max bucket size with only the last measurement having kSchemaChange.
-    auto batchOfMeasurementsWithSchemaChangeAtEnd = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kSchemaChange, .metaValue = _metaValue});
-
     // The last measurement in batchOfMeasurementsWithSchemaChangeAtEnd will have a int rather
     // than a string for field "deathGrips", which means this measurement will be in a different
     // bucket.
+    // Max bucket count with only the last measurement having kSchemaChange.
+    auto batchOfMeasurementsWithSchemaChangeAtEnd =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSchemaChange});
+
     // Inserting a batch of measurements with meta field values into a collection with a meta field.
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
     std::vector<size_t> numMeasurementsInWriteBatchAtEnd{
@@ -3185,33 +4464,35 @@ TEST_F(BucketCatalogTest,
 
 TEST_F(BucketCatalogTest,
        StageInsertBatchIntoEligibleBucketHandlesRolloverSchemaChangeWithoutMetaField) {
-    // Max bucket size with measurements[1:gTimeseriesBucketMaxCount] having kSchemaChange.
-    // Inserting a batch of measurements without meta field values into a collection without a meta
-    // field.
-    auto batchOfMeasurementsWithSchemaChangeAfterFirstMeasurementNoMetaField =
+    // Max bucket count with measurements[1:gTimeseriesBucketMaxCount] having kSchemaChange.
+    auto batchOfMeasurementsWithSchemaChangeAfterFirstMeasurement =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSchemaChange,
                                                  .idxWithDiffMeasurement = 1,
-                                                 .metaValue = boost::none});
+                                                 .metaValueType = boost::none});
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
     std::vector<size_t> numMeasurementsInWriteBatchAfterFirstMeasurement{
         1, static_cast<size_t>(gTimeseriesBucketMaxCount - 1)};
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
         _nsNoMeta,
         _uuidNoMeta,
-        batchOfMeasurementsWithSchemaChangeAfterFirstMeasurementNoMetaField,
+        batchOfMeasurementsWithSchemaChangeAfterFirstMeasurement,
         currBatchedInsertContextsIndex,
         numMeasurementsInWriteBatchAfterFirstMeasurement,
         /*numBatchedInsertContexts=*/1);
 
     // 50 measurements with measurements[25:50] having kSchemaChange.
-    // Inserting a batch of measurements without meta field values into a collection with a meta
-    // field.
     auto batchOfMeasurementsWithTimeForwardInMiddle =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSchemaChange,
                                                  .numMeasurements = 50,
                                                  .idxWithDiffMeasurement = 25,
-                                                 .metaValue = boost::none});
+                                                 .metaValueType = boost::none});
     std::vector<size_t> numMeasurementsInWriteBatchInMiddle{25, 25};
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
     _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         _ns1,
         _uuid1,
@@ -3222,11 +4503,10 @@ TEST_F(BucketCatalogTest,
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverSizeWithMetaField) {
-    std::vector<BSONObj> batchOfMeasurementsWithSize =
-        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSize});
-
     // The last measurement will exceed the size that the bucket can store. We will trigger kSize,
     // so the measurement will be in a different bucket.
+    std::vector<BSONObj> batchOfMeasurementsWithSize =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSize});
     std::vector<size_t> numMeasurementsInWriteBatch{124, 1};
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
 
@@ -3240,30 +4520,28 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverSizeW
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverSizeWithoutMetaField) {
-    std::vector<BSONObj> batchOfMeasurementsWithSizeNoMetaField =
-        _generateMeasurementsWithRolloverReason(
-            {.reason = RolloverReason::kSize, .metaValue = boost::none});
     // The last measurement will exceed the size that the bucket can store. We will trigger kSize,
     // so the measurement will be in a different bucket.
+    std::vector<BSONObj> batchOfMeasurementsWithSize = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kSize, .metaValueType = boost::none});
     std::vector<size_t> numMeasurementsInWriteBatch{124, 1};
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
 
     // Inserting a batch of measurements without meta field values into a collection without a meta
     // field.
-    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
-        _nsNoMeta,
-        _uuidNoMeta,
-        batchOfMeasurementsWithSizeNoMetaField,
-        currBatchedInsertContextsIndex,
-        numMeasurementsInWriteBatch,
-        /*numBatchedInsertContexts=*/1);
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
+                                                                  _uuidNoMeta,
+                                                                  batchOfMeasurementsWithSize,
+                                                                  currBatchedInsertContextsIndex,
+                                                                  numMeasurementsInWriteBatch,
+                                                                  /*numBatchedInsertContexts=*/1);
 
     // Inserting a batch of measurements without meta field values into a collection with a meta
     // field.
     _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         _ns1,
         _uuid1,
-        batchOfMeasurementsWithSizeNoMetaField,
+        batchOfMeasurementsWithSize,
         currBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
@@ -3274,12 +4552,11 @@ TEST_F(BucketCatalogTest,
     // Artificially lower _storageCacheSizeBytes so we can simulate kCachePressure.
     _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes;
 
-    std::vector<BSONObj> batchOfMeasurementsWithCachePressure =
-        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kCachePressure});
-
     // The last measurement will exceed the size that the bucket can store. Coupled with the
     // lowered cache size, we will trigger kCachePressure, so the measurement will be in a
     // different bucket.
+    std::vector<BSONObj> batchOfMeasurementsWithCachePressure =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kCachePressure});
     std::vector<size_t> numMeasurementsInWriteBatch{3, 1};
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
 
@@ -3305,16 +4582,16 @@ TEST_F(BucketCatalogTest,
     // different bucket.
     std::vector<size_t> numMeasurementsInWriteBatch{3, 1};
     std::vector<size_t> currBatchedInsertContextsIndex{0, 0};
-    std::vector<BSONObj> batchOfMeasurementsWithCachePressureNoMetaField =
+    std::vector<BSONObj> batchOfMeasurementsWithCachePressure =
         _generateMeasurementsWithRolloverReason(
-            {.reason = RolloverReason::kCachePressure, .metaValue = boost::none});
+            {.reason = RolloverReason::kCachePressure, .metaValueType = boost::none});
 
     // Inserting a batch of measurements without meta field values into a collection without a meta
     // field.
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
         _nsNoMeta,
         _uuidNoMeta,
-        batchOfMeasurementsWithCachePressureNoMetaField,
+        batchOfMeasurementsWithCachePressure,
         currBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
@@ -3324,7 +4601,7 @@ TEST_F(BucketCatalogTest,
     _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
         _ns1,
         _uuid1,
-        batchOfMeasurementsWithCachePressureNoMetaField,
+        batchOfMeasurementsWithCachePressure,
         currBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
@@ -3335,7 +4612,9 @@ TEST_F(BucketCatalogTest,
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed) {
     auto batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kCount, .timeValue = Date_t::now()});
+        {.reason = RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount),
+         .timeValue = Date_t::now()});
 
     auto batchOfMeasurementsWithSchemaChange =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSchemaChange,
@@ -3359,7 +4638,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
                   batchOfMeasurements.size());
 
     std::vector<size_t> numWriteBatches{5};
-    std::vector<size_t> currBatchedInsertContextsIndex{0, 0, 0, 0, 0};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0, 0, 0, 0};
 
     // We first fill up two buckets with gTimeseriesBucketMaxCount measurements due to the
     // batchOfMeasurementsWithCount.
@@ -3385,7 +4664,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
                                                                   _uuidNoMeta,
                                                                   mixedRolloverReasonsMeasurements,
-                                                                  currBatchedInsertContextsIndex,
+                                                                  curBatchedInsertContextsIndex,
                                                                   numMeasurementsInWriteBatch,
                                                                   /*numBatchedInsertContexts=*/1);
 
@@ -3393,26 +4672,28 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
     _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
                                                          _uuid1,
                                                          mixedRolloverReasonsMeasurements,
-                                                         currBatchedInsertContextsIndex,
+                                                         curBatchedInsertContextsIndex,
                                                          numMeasurementsInWriteBatch,
                                                          /*numBatchedInsertContexts=*/1);
 }
 
 TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixedWithNoMeta) {
-    auto batchOfMeasurementsWithSize = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kSize, .metaValue = boost::none, .timeValue = Date_t::now()});
+    auto batchOfMeasurementsWithSize =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSize,
+                                                 .timeValue = Date_t::now(),
+                                                 .metaValueType = boost::none});
 
     std::vector<BSONObj> batchOfMeasurements =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kNone,
                                                  .numMeasurements = 50,
-                                                 .metaValue = boost::none,
-                                                 .timeValue = Date_t::now() + Seconds(1)});
+                                                 .timeValue = Date_t::now() + Seconds(1),
+                                                 .metaValueType = boost::none});
 
     auto batchOfMeasurementsWithTimeForward =
         _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kTimeForward,
                                                  .idxWithDiffMeasurement = 1,
-                                                 .metaValue = boost::none,
-                                                 .timeValue = Date_t::now() + Seconds(2)});
+                                                 .timeValue = Date_t::now() + Seconds(2),
+                                                 .metaValueType = boost::none});
 
     std::vector<BSONObj> mixedRolloverReasonsMeasurements =
         _getFlattenedVector(std::vector<std::vector<BSONObj>>{
@@ -3422,7 +4703,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
                   batchOfMeasurementsWithTimeForward.size());
 
     std::vector<size_t> numWriteBatches{3};
-    std::vector<size_t> currBatchedInsertContextsIndex{0, 0, 0};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0, 0};
 
     // We will insert the first 124 measurements from batchOfMeasurementsWithSize into our first
     // bucket until we encounter the last measurement making us rollover due to size.
@@ -3439,7 +4720,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
                                                                   _uuidNoMeta,
                                                                   mixedRolloverReasonsMeasurements,
-                                                                  currBatchedInsertContextsIndex,
+                                                                  curBatchedInsertContextsIndex,
                                                                   numMeasurementsInWriteBatch,
                                                                   /*numBatchedInsertContexts=*/1);
 
@@ -3448,7 +4729,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
         _ns1,
         _uuid1,
         mixedRolloverReasonsMeasurements,
-        currBatchedInsertContextsIndex,
+        curBatchedInsertContextsIndex,
         numMeasurementsInWriteBatch,
         /*numBatchedInsertContexts=*/1);
 }
@@ -3484,7 +4765,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
                   batchOfMeasurementsWithCachePressure.size() + batchOfMeasurements.size());
 
     std::vector<size_t> numWriteBatches{3};
-    std::vector<size_t> currBatchedInsertContextsIndex{0, 0, 0};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0, 0};
 
     // The first bucket will consist of one  measurement from
     // batchOfMeasurementsWithSchemaChange. We will then rollover due to kSchemaChange. The
@@ -3501,7 +4782,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
     _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
                                                                   _uuidNoMeta,
                                                                   mixedRolloverReasonsMeasurements,
-                                                                  currBatchedInsertContextsIndex,
+                                                                  curBatchedInsertContextsIndex,
                                                                   numMeasurementsInWriteBatch,
                                                                   /*numBatchedInsertContexts=*/1);
 
@@ -3509,7 +4790,7 @@ TEST_F(BucketCatalogTest, StageInsertBatchIntoEligibleBucketHandlesRolloverMixed
     _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
                                                          _uuid1,
                                                          mixedRolloverReasonsMeasurements,
-                                                         currBatchedInsertContextsIndex,
+                                                         curBatchedInsertContextsIndex,
                                                          numMeasurementsInWriteBatch,
                                                          /*numBatchedInsertContexts=*/1);
 
@@ -3527,179 +4808,993 @@ TEST_F(BucketCatalogTest, BucketMetadataNormalization) {
                                      BSON("nested" << BSON("a" << 1 << "b" << 1)));
 }
 
-class CreateOrderedPotentialBucketsVectorTest : public BucketCatalogTest {
-public:
-    // We generate these measurements without a rollover reason to guarantee that the measurements
-    // we create will fit into one bucket, but we can mark the bucket generated with a rollover
-    // reason.
-    const std::vector<BSONObj> measurement1Vec = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kNone, .numMeasurements = 1});
-    const std::vector<BSONObj> measurement2Vec = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kNone, .numMeasurements = 2});
-    const std::vector<BSONObj> measurement3Vec = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kNone, .numMeasurements = 3});
-    const std::vector<BSONObj> measurement4Vec = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kNone, .numMeasurements = 4});
-    const std::vector<BSONObj> measurement5Vec = _generateMeasurementsWithRolloverReason(
-        {.reason = RolloverReason::kNone, .numMeasurements = 5});
-    const std::vector<BSONObj> measurementTimeseriesBucketMaxCountVec =
-        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kNone});
 
-    const std::vector<std::vector<BSONObj>> unsorted1{measurement1Vec,
-                                                      measurement2Vec,
-                                                      measurement3Vec,
-                                                      measurementTimeseriesBucketMaxCountVec,
-                                                      measurement5Vec};
-    const std::vector<std::vector<BSONObj>> unsorted2{
-        measurementTimeseriesBucketMaxCountVec,
-        measurement4Vec,
-        measurement2Vec,
-        measurement3Vec,
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketFillsUpSingleBucketWithMetaField) {
+    std::vector<BSONObj> batchOfMeasurementsTimeseriesBucketMaxCount =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = RolloverReason::kNone,
+             .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount - 1)});
+    std::vector<size_t> curBatchedInsertContextsIndex{0};
+    std::vector<size_t> numMeasurementsInWriteBatch{
+        static_cast<size_t>(gTimeseriesBucketMaxCount - 1)};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.push_back(std::make_pair(measurement1Vec, RolloverReason::kNone));
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsTimeseriesBucketMaxCount,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatch,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+}
+
+TEST_F(BucketCatalogTest,
+       StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketFillsUpSingleBucketWithoutMeta) {
+    std::vector<BSONObj> batchOfMeasurementsOne = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 1, .metaValueType = boost::none});
+    std::vector<size_t> curBatchedInsertContextsIndex{0};
+    std::vector<size_t> numMeasurementsInWriteBatch{1};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.push_back(
+        std::make_pair(measurementTimeseriesBucketMaxCountMinus1Vec, RolloverReason::kNone));
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_nsNoMeta, _uuidNoMeta, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection without a
+    // meta field.
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
+                                                                  _uuidNoMeta,
+                                                                  batchOfMeasurementsOne,
+                                                                  curBatchedInsertContextsIndex,
+                                                                  numMeasurementsInWriteBatch,
+                                                                  /*numBatchedInsertContexts=*/1,
+                                                                  buckets);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    buckets = _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+    _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsOne,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatch,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+}
+
+TEST_F(BucketCatalogTest,
+       StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesCountWithMetaField) {
+    std::vector<BSONObj> batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(2 * gTimeseriesBucketMaxCount)});
+    std::vector<size_t> numMeasurementsInWriteBatch{
+        static_cast<size_t>(gTimeseriesBucketMaxCount - 1),
+        static_cast<size_t>(gTimeseriesBucketMaxCount - 2),
+        3};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0, 0};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(measurement1Vec, RolloverReason::kSchemaChange),
+         std::make_pair(measurement2Vec, RolloverReason::kSchemaChange),
+         std::make_pair(measurement5Vec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
+                                                         _uuid1,
+                                                         batchOfMeasurementsWithCount,
+                                                         curBatchedInsertContextsIndex,
+                                                         numMeasurementsInWriteBatch,
+                                                         /*numBatchedInsertContexts=*/1,
+                                                         buckets);
+}
+
+TEST_F(BucketCatalogTest,
+       StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesCountWithoutMetaField) {
+    std::vector<BSONObj> batchOfMeasurementsWithCount = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kCount,
+         .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount + 1),
+         .metaValueType = boost::none});
+    std::vector<size_t> numMeasurementsInWriteBatch{
+        0, static_cast<size_t>(gTimeseriesBucketMaxCount - 5), 6};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0, 0};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(measurementTimeseriesBucketMaxCountVec, RolloverReason::kCount),
+         std::make_pair(measurement5Vec, RolloverReason::kSchemaChange),
+         std::make_pair(measurement1Vec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_nsNoMeta, _uuidNoMeta, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
+                                                                  _uuidNoMeta,
+                                                                  batchOfMeasurementsWithCount,
+                                                                  curBatchedInsertContextsIndex,
+                                                                  numMeasurementsInWriteBatch,
+                                                                  /*numBatchedInsertContexts=*/1,
+                                                                  buckets);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    buckets = _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+    _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsWithCount,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatch,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+}
+
+TEST_F(BucketCatalogTest,
+       StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesTimeForwardWithMetaField) {
+    // The last measurement in batchOfMeasurementsWithTimeForwardAtEnd will have a timestamp outside
+    // of the bucket range encompassing the previous measurements, which means that this
+    // measurement will be in a different bucket.
+    std::vector<BSONObj> batchOfMeasurementsWithTimeForwardAtEnd =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kTimeForward,
+                                                 .numMeasurements = 12,
+                                                 .idxWithDiffMeasurement = 11,
+                                                 .timeValue = Date_t::fromMillisSinceEpoch(100)});
+    std::vector<size_t> numMeasurementsInWriteBatch{1, 10, 1};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0, 0};
+
+    auto nonTimeForwardBucketVec1 = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone,
+         .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount - 1),
+         .timeValue = (Date_t::fromMillisSinceEpoch(100))});
+    auto nonTimeForwardBucketVec2 =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kNone,
+                                                 .numMeasurements = 5,
+                                                 .timeValue = (Date_t::fromMillisSinceEpoch(100))});
+    auto timeForwardBucketVec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone,
+         .numMeasurements = 1,
+         .timeValue = (Date_t::fromMillisSinceEpoch(100) + Hours(2))});
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(nonTimeForwardBucketVec1, RolloverReason::kSchemaChange),
+         std::make_pair(nonTimeForwardBucketVec2, RolloverReason::kSchemaChange),
+         std::make_pair(timeForwardBucketVec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
+                                                         _uuid1,
+                                                         batchOfMeasurementsWithTimeForwardAtEnd,
+                                                         curBatchedInsertContextsIndex,
+                                                         numMeasurementsInWriteBatch,
+                                                         /*numBatchedInsertContexts=*/1,
+                                                         buckets);
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesTimeForwardWithoutMetaField) {
+    // Max bucket size with measurements[1:gTimeseriesBucketMaxCount] having kTimeForward.
+    auto batchOfMeasurementsWithTimeForwardAfterFirstMeasurement =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = RolloverReason::kTimeForward,
+             .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount),
+             .idxWithDiffMeasurement = 1,
+             .timeValue = Date_t::fromMillisSinceEpoch(100),
+             .metaValueType = boost::none});
+    std::vector<size_t> numMeasurementsInWriteBatchAfterFirstMeasurement{
+        1, static_cast<size_t>(gTimeseriesBucketMaxCount - 1)};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+
+    auto nonTimeForwardBucketVec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone,
+         .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount - 1),
+         .timeValue = (Date_t::fromMillisSinceEpoch(100))});
+    auto timeForwardBucketVec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone,
+         .numMeasurements = 1,
+         .timeValue = (Date_t::fromMillisSinceEpoch(100) + Hours(2))});
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(nonTimeForwardBucketVec, RolloverReason::kSchemaChange),
+         std::make_pair(timeForwardBucketVec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_nsNoMeta, _uuidNoMeta, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
+        _nsNoMeta,
+        _uuidNoMeta,
+        batchOfMeasurementsWithTimeForwardAfterFirstMeasurement,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatchAfterFirstMeasurement,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+
+    // 50 measurements with measurements[25:50] having kTimeForward.
+    std::vector<size_t> numMeasurementsInWriteBatchInMiddle{25, 25};
+    auto batchOfMeasurementsWithTimeForwardInMiddle =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kTimeForward,
+                                                 .numMeasurements = 50,
+                                                 .idxWithDiffMeasurement = 25,
+                                                 .timeValue = Date_t::fromMillisSinceEpoch(100),
+                                                 .metaValueType = boost::none});
+
+    nonTimeForwardBucketVec =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kNone,
+                                                 .numMeasurements = 50,
+                                                 .timeValue = (Date_t::fromMillisSinceEpoch(100))});
+    timeForwardBucketVec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone,
+         .numMeasurements = static_cast<size_t>(gTimeseriesBucketMaxCount - 50),
+         .timeValue = (Date_t::fromMillisSinceEpoch(100) + Hours(2))});
+    measurementsAndRolloverReason.clear();
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(nonTimeForwardBucketVec, RolloverReason::kSchemaChange),
+         std::make_pair(timeForwardBucketVec, RolloverReason::kSchemaChange)});
+    buckets = _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsWithTimeForwardInMiddle,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatchInMiddle,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesRolloverSchemaChangeWithMetaField) {
+    Date_t timeValue = Date_t::now();
+    // Max bucket size with only the last measurement having kSchemaChange.
+    auto batchOfMeasurementsWithSchemaChangeAtEnd = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kSchemaChange, .timeValue = timeValue});
+
+    // The last measurement in batchOfMeasurementsWithSchemaChangeAtEnd will have a int rather
+    // than a string for field "deathGrips", which means this measurement will be in a different
+    // bucket.
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+    std::vector<size_t> numMeasurementsInWriteBatchAtEnd{
+        static_cast<size_t>(gTimeseriesBucketMaxCount - 1), 1};
+
+    auto nonSchemaChangeBucketVec = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kNone, .numMeasurements = 1, .timeValue = timeValue});
+    std::vector<BSONObj> schemaChangeVec;
+    for (size_t i = 0; i < static_cast<size_t>(gTimeseriesBucketMaxCount - 2); i++) {
+        schemaChangeVec.emplace_back(
+            BSON(_timeField << timeValue << _metaField << _metaValue << "deathGrips" << 100));
+    }
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(nonSchemaChangeBucketVec, RolloverReason::kSchemaChange),
+         std::make_pair(schemaChangeVec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
+                                                         _uuid1,
+                                                         batchOfMeasurementsWithSchemaChangeAtEnd,
+                                                         curBatchedInsertContextsIndex,
+                                                         numMeasurementsInWriteBatchAtEnd,
+                                                         /*numBatchedInsertContexts=*/1);
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesRolloverSchemaChangeWithoutMetaField) {
+    Date_t timeValue = Date_t::now();
+    // The first measurement in batchOfMeasurementsWithSchemaChangeAtEnd will have a int rather
+    // than a string for field "deathGrips", which means this measurement will be in a different
+    // bucket.
+    // Max bucket size with measurements[1:gTimeseriesBucketMaxCount] having kSchemaChange.
+    auto batchOfMeasurementsWithSchemaChangeAfterFirstMeasurement =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSchemaChange,
+                                                 .idxWithDiffMeasurement = 1,
+                                                 .timeValue = timeValue,
+                                                 .metaValueType = boost::none});
+
+
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+    std::vector<size_t> numMeasurementsInWriteBatchAfterFirstMeasurement{
+        1, static_cast<size_t>(gTimeseriesBucketMaxCount - 1)};
+
+    auto nonSchemaChangeBucketVec =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kNone,
+                                                 .numMeasurements = 50,
+                                                 .timeValue = timeValue,
+                                                 .metaValueType = boost::none});
+    std::vector<BSONObj> schemaChangeVec{BSON(_timeField << timeValue << "deathGrips" << 100)};
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(nonSchemaChangeBucketVec, RolloverReason::kSchemaChange),
+         std::make_pair(schemaChangeVec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_nsNoMeta, _uuidNoMeta, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection without a
+    // meta field.
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
+        _nsNoMeta,
+        _uuidNoMeta,
+        batchOfMeasurementsWithSchemaChangeAfterFirstMeasurement,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatchAfterFirstMeasurement,
+        /*numBatchedInsertContexts=*/1);
+    // 50 measurements with measurements [25:50] having kSchemaChange.
+    auto batchOfMeasurementsWithTimeForwardInMiddle =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSchemaChange,
+                                                 .numMeasurements = 50,
+                                                 .idxWithDiffMeasurement = 25,
+                                                 .metaValueType = boost::none});
+
+    schemaChangeVec.clear();
+    for (size_t i = 0; i < static_cast<size_t>(gTimeseriesBucketMaxCount - 25); i++) {
+        schemaChangeVec.emplace_back(BSON(_timeField << timeValue << "deathGrips" << 100));
+    }
+    measurementsAndRolloverReason.clear();
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(nonSchemaChangeBucketVec, RolloverReason::kSchemaChange),
+         std::make_pair(schemaChangeVec, RolloverReason::kSchemaChange)});
+    buckets = _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+    std::vector<size_t> numMeasurementsInWriteBatchInMiddle{25, 25};
+
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsWithTimeForwardInMiddle,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatchInMiddle,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesRolloverSizeWithMetaField) {
+    // The last measurement will exceed the size that the bucket can store. We will trigger kSize,
+    // so the measurement will be in a different bucket.
+    std::vector<BSONObj> batchOfMeasurementsWithSize =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kSize});
+    std::vector<size_t> numMeasurementsInWriteBatch{124, 1};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(measurement4Vec, RolloverReason::kSchemaChange),
+         std::make_pair(measurement1Vec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta field.
+    _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
+                                                         _uuid1,
+                                                         batchOfMeasurementsWithSize,
+                                                         curBatchedInsertContextsIndex,
+                                                         numMeasurementsInWriteBatch,
+                                                         /*numBatchedInsertContexts=*/1,
+                                                         buckets);
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesRolloverSizeWithoutMetaField) {
+    // The last measurement will exceed the size that the bucket can store. We will trigger kSize,
+    // so the measurement will be in a different bucket.
+    std::vector<BSONObj> batchOfMeasurementsWithSize = _generateMeasurementsWithRolloverReason(
+        {.reason = RolloverReason::kSize, .metaValueType = boost::none});
+    std::vector<size_t> numMeasurementsInWriteBatch{124, 1};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {std::make_pair(measurement2Vec, RolloverReason::kSchemaChange),
+         std::make_pair(measurement5Vec, RolloverReason::kSchemaChange)});
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_nsNoMeta, _uuidNoMeta, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection without a
+    // meta field
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(_nsNoMeta,
+                                                                  _uuidNoMeta,
+                                                                  batchOfMeasurementsWithSize,
+                                                                  curBatchedInsertContextsIndex,
+                                                                  numMeasurementsInWriteBatch,
+                                                                  /*numBatchedInsertContexts=*/1,
+                                                                  buckets);
+
+    buckets = _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsWithSize,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatch,
+        /*numBatchedInsertContexts=*/1,
+        buckets);
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesRolloverCachePressureWithMetaField) {
+    // Artificially lower _storageCacheSizeBytes so we can simulate kCachePressure.
+    _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes;
+
+    //  We will trigger kCachePressure due to the size of the measurements stored and the lowered
+    //  storageCacheSizeBytes.
+    std::vector<BSONObj> batchOfMeasurementsWithCachePressure =
+        _generateMeasurementsWithRolloverReason({.reason = RolloverReason::kCachePressure});
+    std::vector<size_t> numMeasurementsInWriteBatch{2, 2};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {
+            std::make_pair(measurement1Vec, RolloverReason::kSchemaChange),
+            std::make_pair(measurement1Vec, RolloverReason::kSchemaChange),
+        });
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements with meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithMetaField(_ns1,
+                                                         _uuid1,
+                                                         batchOfMeasurementsWithCachePressure,
+                                                         curBatchedInsertContextsIndex,
+                                                         numMeasurementsInWriteBatch,
+                                                         /*numBatchedInsertContexts=*/1,
+                                                         buckets);
+
+    // Reset _storageCacheSizeBytes back to a representative value.
+    _storageCacheSizeBytes = kDefaultStorageCacheSizeBytes;
+}
+
+TEST_F(
+    BucketCatalogTest,
+    StageInsertBatchIntoEligibleBucketWithPartiallyFilledBucketHandlesRolloverCachePressureWithoutMetaField) {
+    // Artificially lower _storageCacheSizeBytes so we can simulate kCachePressure.
+    _storageCacheSizeBytes = kLimitedStorageCacheSizeBytes;
+
+    // We will trigger kCachePressure due to the size of the measurements stored and the lowered
+    // storageCacheSizeBytes.
+    std::vector<BSONObj> batchOfMeasurementsWithCachePressure =
+        _generateMeasurementsWithRolloverReason(
+            {.reason = RolloverReason::kCachePressure, .metaValueType = boost::none});
+    std::vector<size_t> numMeasurementsInWriteBatch{3, 1};
+    std::vector<size_t> curBatchedInsertContextsIndex{0, 0};
+
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> measurementsAndRolloverReason;
+    measurementsAndRolloverReason.insert(
+        measurementsAndRolloverReason.end(),
+        {
+            std::make_pair(measurement1Vec, RolloverReason::kSchemaChange),
+            std::make_pair(measurement1Vec, RolloverReason::kSchemaChange),
+        });
+    absl::InlinedVector<Bucket*, 8> buckets =
+        _generateBucketsWithMeasurements(_nsNoMeta, _uuidNoMeta, measurementsAndRolloverReason);
+
+    // Inserting a batch of measurements without meta field values into a collection without a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketInCollWithoutMetaField(
+        _nsNoMeta,
+        _uuidNoMeta,
+        batchOfMeasurementsWithCachePressure,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatch,
+        /*numBatchedInsertContexts=*/1);
+
+    buckets = _generateBucketsWithMeasurements(_ns1, _uuid1, measurementsAndRolloverReason);
+    // Inserting a batch of measurements without meta field values into a collection with a meta
+    // field.
+    _testStageInsertBatchIntoEligibleBucketWithoutMetaFieldInCollWithMetaField(
+        _ns1,
+        _uuid1,
+        batchOfMeasurementsWithCachePressure,
+        curBatchedInsertContextsIndex,
+        numMeasurementsInWriteBatch,
+        /*numBatchedInsertContexts=*/1);
+
+    // Reset _storageCacheSizeBytes back to a representative value.
+    _storageCacheSizeBytes = kDefaultStorageCacheSizeBytes;
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsSimpleOneFullBucket) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<BSONObj> userBatch;
+    for (auto i = 0; i < gTimeseriesBucketMaxCount; i++) {
+        userBatch.emplace_back(BSON(_timeField << Date_t::now() << _metaField << _metaValue));
+    }
+
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_ns1),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/true,
+                                                  _compressBucketFuncUnused,
+                                                  userBatch,
+                                                  /*startIndex=*/0,
+                                                  /*numDocsToStage=*/userBatch.size(),
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+
+    ASSERT_TRUE(swWriteBatches.isOK());
+    ASSERT_TRUE(errorsAndIndices.empty());
+
+    auto& writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 1);
+
+    for (size_t i = 0; i < writeBatches.size(); i++) {
+        ASSERT_EQ(writeBatches[i]->isReopened, false);
+        ASSERT_EQ(writeBatches[i]->bucketIsSortedByTime, true);
+        ASSERT_EQ(writeBatches[i]->opId, _opCtx->getOpID());
+    }
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsMultipleBucketsOneMeta) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<BSONObj> userBatch;
+    for (auto i = 0; i < 2 * gTimeseriesBucketMaxCount; i++) {
+        userBatch.emplace_back(BSON(_timeField << Date_t::now() << _metaField << _metaValue));
+    }
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_ns1),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/true,
+                                                  _compressBucketFuncUnused,
+                                                  userBatch,
+                                                  /*startIndex=*/0,
+                                                  /*numDocsToStage=*/userBatch.size(),
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+
+    ASSERT_TRUE(swWriteBatches.isOK());
+    ASSERT_TRUE(errorsAndIndices.empty());
+
+    auto& writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 2);
+
+    for (size_t i = 0; i < writeBatches.size(); i++) {
+        ASSERT_EQ(writeBatches[i]->isReopened, false);
+        ASSERT_EQ(writeBatches[i]->bucketIsSortedByTime, true);
+        ASSERT_EQ(writeBatches[i]->opId, _opCtx->getOpID());
+    }
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsMultipleBucketsMultipleMetas) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<BSONObj> userBatch;
+    for (auto i = 0; i < gTimeseriesBucketMaxCount; i++) {
+        userBatch.emplace_back(BSON(_timeField << Date_t::now() << _metaField << _metaValue));
+    }
+    for (auto i = 0; i < gTimeseriesBucketMaxCount; i++) {
+        userBatch.emplace_back(BSON(_timeField << Date_t::now() << _metaField << "m"));
+    }
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_ns1),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/true,
+                                                  _compressBucketFuncUnused,
+                                                  userBatch,
+                                                  /*startIndex=*/0,
+                                                  /*numDocsToStage=*/userBatch.size(),
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+
+    ASSERT_TRUE(swWriteBatches.isOK());
+    ASSERT_TRUE(errorsAndIndices.empty());
+
+    auto& writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 2);
+
+    for (size_t i = 0; i < writeBatches.size(); i++) {
+        ASSERT_EQ(writeBatches[i]->isReopened, false);
+        ASSERT_EQ(writeBatches[i]->bucketIsSortedByTime, true);
+        ASSERT_EQ(writeBatches[i]->opId, _opCtx->getOpID());
+    }
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsMultipleBucketsMultipleMetasInterleaved) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<BSONObj> userBatch;
+    for (auto i = 0; i < 2 * gTimeseriesBucketMaxCount; i++) {
+        userBatch.emplace_back(BSON(_timeField << Date_t::now() << _metaField
+                                               << (i % 2 == 0 ? _metaValue : _metaValue2)));
+    }
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_ns1),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/true,
+                                                  _compressBucketFuncUnused,
+                                                  userBatch,
+                                                  /*startIndex=*/0,
+                                                  /*numDocsToStage=*/userBatch.size(),
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+
+    ASSERT_TRUE(swWriteBatches.isOK());
+    ASSERT_TRUE(errorsAndIndices.empty());
+
+    auto& writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 2);
+
+    for (size_t i = 0; i < writeBatches.size(); i++) {
+        ASSERT_EQ(writeBatches[i]->isReopened, false);
+        ASSERT_EQ(writeBatches[i]->bucketIsSortedByTime, true);
+        ASSERT_EQ(writeBatches[i]->opId, _opCtx->getOpID());
+    }
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsBadMeasurementsAll) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    std::vector<BSONObj> userMeasurementsBatch{
+        BSON(_metaField << _metaValue << "x" << 2),  // Malformed measurement, missing time field
+        BSON(_metaField << _metaValue << "x" << 3),  // Malformed measurement, missing time field
     };
-    const std::vector<std::vector<BSONObj>> unsorted3{measurement1Vec,
-                                                      measurement2Vec,
-                                                      measurement1Vec,
-                                                      measurement4Vec,
-                                                      measurement3Vec,
-                                                      measurement4Vec};
-    const std::vector<std::vector<BSONObj>> unsorted4{measurementTimeseriesBucketMaxCountVec,
-                                                      measurementTimeseriesBucketMaxCountVec,
-                                                      measurementTimeseriesBucketMaxCountVec,
-                                                      measurementTimeseriesBucketMaxCountVec,
-                                                      measurementTimeseriesBucketMaxCountVec,
-                                                      measurement1Vec};
-    const std::vector<std::vector<BSONObj>> unsortedLong1 =
-        _getFlattenedVector(std::vector<std::vector<std::vector<BSONObj>>>{unsorted1, unsorted2});
-    const std::vector<std::vector<BSONObj>> unsortedLong2 =
-        _getFlattenedVector(std::vector<std::vector<std::vector<BSONObj>>>{unsorted2, unsorted3});
-    const std::vector<std::vector<BSONObj>> unsortedLong3 =
-        _getFlattenedVector(std::vector<std::vector<std::vector<BSONObj>>>{unsorted3, unsorted4});
-    const std::vector<std::vector<BSONObj>> sorted1{measurement1Vec,
-                                                    measurement2Vec,
-                                                    measurement3Vec,
-                                                    measurement4Vec,
-                                                    measurement5Vec,
-                                                    measurementTimeseriesBucketMaxCountVec};
-    const std::vector<std::vector<BSONObj>> sorted2{measurement2Vec,
-                                                    measurement3Vec,
-                                                    measurement3Vec,
-                                                    measurement3Vec,
-                                                    measurementTimeseriesBucketMaxCountVec,
-                                                    measurementTimeseriesBucketMaxCountVec,
-                                                    measurementTimeseriesBucketMaxCountVec};
-    const std::vector<std::vector<BSONObj>> sorted3{
-        measurement1Vec, measurement1Vec, measurement2Vec, measurement2Vec, measurement4Vec};
-    const std::vector<std::vector<std::vector<BSONObj>>> allMeasurementVecs =
-        std::vector<std::vector<std::vector<BSONObj>>>{unsorted1,
-                                                       unsorted2,
-                                                       unsorted3,
-                                                       unsorted4,
-                                                       unsortedLong1,
-                                                       unsortedLong2,
-                                                       unsortedLong3,
-                                                       sorted1,
-                                                       sorted2,
-                                                       sorted3};
 
-protected:
-    std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> _getPairsVector(
-        const std::vector<std::vector<BSONObj>>& measurements,
-        const bucket_catalog::RolloverReason& reason) const {
-        std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> result;
-        result.reserve(measurements.size());
-        std::transform(measurements.begin(),
-                       measurements.end(),
-                       std::back_inserter(result),
-                       [&reason](const std::vector<BSONObj>& element) {
-                           return std::make_pair(element, reason);
-                       });
-        return result;
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_ns1),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/true,
+                                                  _compressBucketFuncUnused,
+                                                  userMeasurementsBatch,
+                                                  /*startIndex=*/0,
+                                                  /*numDocsToStage=*/userMeasurementsBatch.size(),
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+
+    ASSERT_FALSE(swWriteBatches.isOK());
+    ASSERT_EQ(errorsAndIndices.size(), 2);
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsBadMeasurementsSome) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    std::vector<BSONObj> userMeasurementsBatch{
+        BSON(_metaField << _metaValue << "x" << 2),  // Malformed measurement, missing time field
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(5) << _metaField << _metaValue << "x" << 3),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(2) << _metaField << _metaValue << "x" << 3),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(3) << _metaField << _metaValue2 << "x"
+                        << 3),
+        BSON(_metaField << _metaValue2 << "x" << 3),  // Malformed measurement, missing time field
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(9) << _metaField << _metaValue2 << "x"
+                        << 3),
+    };
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_ns1),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/true,
+                                                  _compressBucketFuncUnused,
+                                                  userMeasurementsBatch,
+                                                  /*startIndex=*/0,
+                                                  /*numDocsToStage=*/userMeasurementsBatch.size(),
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+
+    ASSERT_FALSE(swWriteBatches.isOK());
+    ASSERT_EQ(errorsAndIndices.size(), 2);
+
+    ASSERT_EQ(errorsAndIndices[0].index, 0);
+    ASSERT_EQ(errorsAndIndices[1].index, 4);
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsRespectsStartIndexNoMeta) {
+    auto tsOptions = _getTimeseriesOptions(_nsNoMeta);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    std::vector<BSONObj> originalUserBatch{
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(2)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(0)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(1)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(3)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(5)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(4)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(6)),
+    };
+
+    stdx::unordered_set<size_t> expectedIndices = {2, 3, 4, 5, 6};
+    size_t startIndex = 2;
+    size_t numDocsToStage = 5;
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_nsNoMeta),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/false,
+                                                  _compressBucketFuncUnused,
+                                                  originalUserBatch,
+                                                  /*startIndex=*/startIndex,
+                                                  /*numDocsToStage=*/numDocsToStage,
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+    ASSERT_OK(swWriteBatches);
+    auto writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 1);
+
+    auto writeBatch = writeBatches.front();
+    ASSERT_EQ(writeBatch->measurements.size(), numDocsToStage);
+    ASSERT_EQ(stdx::unordered_set<size_t>(writeBatch->userBatchIndices.begin(),
+                                          writeBatch->userBatchIndices.end()),
+              expectedIndices);
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsRespectsStartIndexWithMeta) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    std::vector<BSONObj> originalUserBatch{
+        BSON(_metaField << _metaValue << _timeField << Date_t::fromMillisSinceEpoch(2)),
+        BSON(_metaField << _metaValue2 << _timeField << Date_t::fromMillisSinceEpoch(0)),
+        BSON(_metaField << _metaValue2 << _timeField << Date_t::fromMillisSinceEpoch(1)),
+        BSON(_metaField << _metaValue << _timeField << Date_t::fromMillisSinceEpoch(3)),
+        BSON(_metaField << _metaValue2 << _timeField << Date_t::fromMillisSinceEpoch(5)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(4)),
+        BSON(_metaField << _metaValue << _timeField << Date_t::fromMillisSinceEpoch(6)),
+    };
+
+    stdx::unordered_set<size_t> expectedIndices = {2, 3, 4, 5, 6};
+    size_t startIndex = 2;
+    size_t numDocsToStage = 5;
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_nsNoMeta),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/false,
+                                                  _compressBucketFuncUnused,
+                                                  originalUserBatch,
+                                                  /*startIndex=*/startIndex,
+                                                  /*numDocsToStage=*/numDocsToStage,
+                                                  /*docsToRetry=*/{},
+                                                  errorsAndIndices);
+    ASSERT_OK(swWriteBatches);
+    auto writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 3);
+
+    stdx::unordered_set<size_t> actualIndices;
+    for (auto& batch : writeBatches) {
+        for (auto index : batch->userBatchIndices) {
+            actualIndices.insert(index);
+        }
     }
 
-    void _testCreateOrderedPotentialBucketsVector(
-        PotentialBucketOptions& potentialBucketOptions) const {
-        auto& kSoftClosedBuckets = potentialBucketOptions.kSoftClosedBuckets;
-        auto& kArchivedBuckets = potentialBucketOptions.kArchivedBuckets;
-        auto& kNoneBucket = potentialBucketOptions.kNoneBucket;
-        bool kNoneBucketExists = (kNoneBucket != nullptr);
-        auto potentialBuckets = createOrderedPotentialBucketsVector(potentialBucketOptions);
-        ASSERT_EQ(potentialBuckets.size(),
-                  (kSoftClosedBuckets.size() + kArchivedBuckets.size() + kNoneBucketExists));
+    ASSERT_EQ(actualIndices, expectedIndices);
+}
 
-        // Check that all the buckets are correctly ordered by their action priority:
-        // kSoftClose -> kArchived -> kNone
-        // and check that all buckets have numMeasurements in increasing order.
-        for (size_t i = 0; i < kSoftClosedBuckets.size(); i++) {
-            ASSERT(getRolloverAction(potentialBuckets[i]->rolloverReason) ==
-                   RolloverAction::kSoftClose);
-            if (i != kSoftClosedBuckets.size() - 1) {
-                ASSERT(potentialBuckets[i]->numMeasurements <=
-                       potentialBuckets[i + 1]->numMeasurements);
-            }
-        }
-        for (size_t i = kSoftClosedBuckets.size();
-             i < (kSoftClosedBuckets.size() + kArchivedBuckets.size());
-             i++) {
-            ASSERT(getRolloverAction(potentialBuckets[i]->rolloverReason) ==
-                   RolloverAction::kArchive);
-            if (i != (kSoftClosedBuckets.size() + kArchivedBuckets.size()) - 1) {
-                ASSERT(potentialBuckets[i]->numMeasurements <=
-                       potentialBuckets[i + 1]->numMeasurements);
-            }
-        }
-        if (kNoneBucketExists) {
-            ASSERT(
-                getRolloverAction(potentialBuckets[potentialBuckets.size() - 1]->rolloverReason) ==
-                RolloverAction::kNone);
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsRespectsDocsToRetryNoMeta) {
+    auto tsOptions = _getTimeseriesOptions(_nsNoMeta);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    std::vector<BSONObj> originalUserBatch{
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(2)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(0)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(1)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(3)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(5)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(4)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(6)),
+    };
+
+    std::vector<size_t> docsToRetry = {0, 2, 4};
+
+    // These should be ignored when docsToRetry is specified.
+    size_t startIndex = 2;
+    size_t numDocsToStage = 5;
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_nsNoMeta),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/false,
+                                                  _compressBucketFuncUnused,
+                                                  originalUserBatch,
+                                                  /*startIndex=*/startIndex,
+                                                  /*numDocsToStage=*/numDocsToStage,
+                                                  /*docsToRetry=*/docsToRetry,
+                                                  errorsAndIndices);
+
+    ASSERT_OK(swWriteBatches);
+    auto writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 1);
+
+    auto writeBatch = writeBatches.front();
+    ASSERT_EQ(writeBatch->measurements.size(), docsToRetry.size());
+    ASSERT_EQ(stdx::unordered_set<size_t>(writeBatch->userBatchIndices.begin(),
+                                          writeBatch->userBatchIndices.end()),
+              stdx::unordered_set<size_t>(docsToRetry.begin(), docsToRetry.end()));
+}
+
+TEST_F(BucketCatalogTest, PrepareInsertsToBucketsRespectsDocsToRetryWithMeta) {
+    auto tsOptions = _getTimeseriesOptions(_ns1);
+    std::vector<bucket_catalog::WriteStageErrorAndIndex> errorsAndIndices;
+    AutoGetCollection autoColl(_opCtx, _ns1.makeTimeseriesBucketsNamespace(), MODE_IS);
+    const auto& bucketsColl = autoColl.getCollection();
+
+    std::vector<BSONObj> originalUserBatch{
+        BSON(_metaField << _metaValue << _timeField << Date_t::fromMillisSinceEpoch(2)),
+        BSON(_metaField << _metaValue2 << _timeField << Date_t::fromMillisSinceEpoch(0)),
+        BSON(_metaField << _metaValue2 << _timeField << Date_t::fromMillisSinceEpoch(1)),
+        BSON(_metaField << _metaValue << _timeField << Date_t::fromMillisSinceEpoch(3)),
+        BSON(_metaField << _metaValue2 << _timeField << Date_t::fromMillisSinceEpoch(5)),
+        BSON(_timeField << Date_t::fromMillisSinceEpoch(4)),
+        BSON(_metaField << _metaValue << _timeField << Date_t::fromMillisSinceEpoch(6)),
+    };
+
+    std::vector<size_t> docsToRetry = {0, 2, 4, 5};
+
+    // These should be ignored when docsToRetry is specified.
+    size_t startIndex = 2;
+    size_t numDocsToStage = 5;
+
+    auto swWriteBatches = prepareInsertsToBuckets(_opCtx,
+                                                  *_bucketCatalog,
+                                                  bucketsColl.get(),
+                                                  tsOptions,
+                                                  _opCtx->getOpID(),
+                                                  _getCollator(_nsNoMeta),
+                                                  _getStorageCacheSizeBytes(),
+                                                  /*earlyReturnOnError=*/false,
+                                                  _compressBucketFuncUnused,
+                                                  originalUserBatch,
+                                                  /*startIndex=*/startIndex,
+                                                  /*numDocsToStage=*/numDocsToStage,
+                                                  /*docsToRetry=*/docsToRetry,
+                                                  errorsAndIndices);
+
+    ASSERT_OK(swWriteBatches);
+    auto writeBatches = swWriteBatches.getValue();
+    ASSERT_EQ(writeBatches.size(), 3);
+
+    stdx::unordered_set<size_t> actualIndices;
+    for (auto& batch : writeBatches) {
+        for (auto index : batch->userBatchIndices) {
+            actualIndices.insert(index);
         }
     }
-};
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithoutAnyBuckets) {
+    ASSERT_EQ(actualIndices, stdx::unordered_set<size_t>(docsToRetry.begin(), docsToRetry.end()));
+}
+
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithoutAnyBuckets) {
     PotentialBucketOptions bucketOptions;
     _testCreateOrderedPotentialBucketsVector(bucketOptions);
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithOneSoftClosedBucketSimple) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithOneSoftClosedBucketSimple) {
     PotentialBucketOptions bucketOptions;
-    std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>
-        softClosedSimpleVec;
-    softClosedSimpleVec.push_back(
-        std::make_pair(measurement1Vec, bucket_catalog::RolloverReason::kTimeForward));
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> softClosedSimpleVec;
+    softClosedSimpleVec.push_back(std::make_pair(measurement1Vec, RolloverReason::kTimeForward));
     absl::InlinedVector<Bucket*, 8> softClosedSimpleBucket =
         _generateBucketsWithMeasurements(_ns1, _uuid1, softClosedSimpleVec);
     bucketOptions.kSoftClosedBuckets = softClosedSimpleBucket;
     _testCreateOrderedPotentialBucketsVector(bucketOptions);
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithOneArchivedBucketSimple) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithOneArchivedBucketSimple) {
     PotentialBucketOptions bucketOptions;
-    std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> archiveSimpleVec;
-    archiveSimpleVec.push_back(
-        std::make_pair(measurement1Vec, bucket_catalog::RolloverReason::kTimeBackward));
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> archiveSimpleVec;
+    archiveSimpleVec.push_back(std::make_pair(measurement1Vec, RolloverReason::kTimeBackward));
     absl::InlinedVector<Bucket*, 8> archiveSimpleBucket =
         _generateBucketsWithMeasurements(_ns1, _uuid1, archiveSimpleVec);
     bucketOptions.kArchivedBuckets = archiveSimpleBucket;
     _testCreateOrderedPotentialBucketsVector(bucketOptions);
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithoutkNoneBucketSimple) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithoutNoneBucketSimple) {
     PotentialBucketOptions bucketOptions;
-    std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>
-        softClosedSimpleVec;
-    softClosedSimpleVec.push_back(
-        std::make_pair(measurement1Vec, bucket_catalog::RolloverReason::kTimeForward));
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> softClosedSimpleVec;
+    softClosedSimpleVec.push_back(std::make_pair(measurement1Vec, RolloverReason::kTimeForward));
     absl::InlinedVector<Bucket*, 8> softClosedSimpleBucket =
         _generateBucketsWithMeasurements(_ns1, _uuid1, softClosedSimpleVec);
     bucketOptions.kSoftClosedBuckets = softClosedSimpleBucket;
 
-    std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> archiveSimpleVec;
-    archiveSimpleVec.push_back(
-        std::make_pair(measurement1Vec, bucket_catalog::RolloverReason::kTimeBackward));
+    std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> archiveSimpleVec;
+    archiveSimpleVec.push_back(std::make_pair(measurement1Vec, RolloverReason::kTimeBackward));
     absl::InlinedVector<Bucket*, 8> archiveSimpleBucket =
         _generateBucketsWithMeasurements(_ns1, _uuid1, archiveSimpleVec);
     bucketOptions.kSoftClosedBuckets = softClosedSimpleBucket;
@@ -3707,13 +5802,12 @@ TEST_F(CreateOrderedPotentialBucketsVectorTest,
     _testCreateOrderedPotentialBucketsVector(bucketOptions);
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithOnlykSoftClosedBuckets) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithOnlySoftClosedBuckets) {
     // Test with only setting kSoftClosedBucket.
     for (size_t i = 0; i < allMeasurementVecs.size(); i++) {
         PotentialBucketOptions bucketOptionsWithEmptyArchive;
-        std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> softClosedVec =
-            _getPairsVector(allMeasurementVecs[i], bucket_catalog::RolloverReason::kTimeForward);
+        std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> softClosedVec =
+            _getMeasurementRolloverReasonVec(allMeasurementVecs[i], RolloverReason::kTimeForward);
         absl::InlinedVector<Bucket*, 8> softClosedBucket =
             _generateBucketsWithMeasurements(_ns1, _uuid1, softClosedVec);
         bucketOptionsWithEmptyArchive.kSoftClosedBuckets = softClosedBucket;
@@ -3721,13 +5815,12 @@ TEST_F(CreateOrderedPotentialBucketsVectorTest,
     }
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithOnlykArchivedBuckets) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithOnlyArchivedBuckets) {
     // Test with only setting kArchivedBuckets.
     for (size_t i = 0; i < allMeasurementVecs.size(); i++) {
         PotentialBucketOptions bucketOptionsWithEmptySoftClosed;
-        std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> archivedVec =
-            _getPairsVector(allMeasurementVecs[i], bucket_catalog::RolloverReason::kTimeBackward);
+        std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> archivedVec =
+            _getMeasurementRolloverReasonVec(allMeasurementVecs[i], RolloverReason::kTimeBackward);
         absl::InlinedVector<Bucket*, 8> archivedBucket =
             _generateBucketsWithMeasurements(_ns1, _uuid1, archivedVec);
         bucketOptionsWithEmptySoftClosed.kArchivedBuckets = archivedBucket;
@@ -3735,22 +5828,21 @@ TEST_F(CreateOrderedPotentialBucketsVectorTest,
     }
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithoutkNoneBucket) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithoutNoneBucket) {
     for (size_t i = 0; i < allMeasurementVecs.size(); i++) {
         PotentialBucketOptions bucketOptions;
         // Create soft-closed buckets.
-        std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> softClosedVec =
-            _getPairsVector(allMeasurementVecs[i], bucket_catalog::RolloverReason::kTimeForward);
+        std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> softClosedVec =
+            _getMeasurementRolloverReasonVec(allMeasurementVecs[i], RolloverReason::kTimeForward);
         absl::InlinedVector<Bucket*, 8> softClosedBucket =
             _generateBucketsWithMeasurements(_ns1, _uuid1, softClosedVec);
         bucketOptions.kSoftClosedBuckets = softClosedBucket;
 
         for (size_t j = 0; j < allMeasurementVecs.size(); j++) {
             // Create archived buckets.
-            std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>
-                archivedVec = _getPairsVector(allMeasurementVecs[j],
-                                              bucket_catalog::RolloverReason::kTimeBackward);
+            std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> archivedVec =
+                _getMeasurementRolloverReasonVec(allMeasurementVecs[j],
+                                                 RolloverReason::kTimeBackward);
             absl::InlinedVector<Bucket*, 8> archivedBucket =
                 _generateBucketsWithMeasurements(_ns1, _uuid1, archivedVec);
             bucketOptions.kArchivedBuckets = archivedBucket;
@@ -3759,14 +5851,13 @@ TEST_F(CreateOrderedPotentialBucketsVectorTest,
     }
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithOnlykNoneBucket) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithOnlyNoneBucket) {
     // The sorted1 vec contains all the potential sizes of measurement vectors [1, 2, 3, 4, 5,
     // kBucketMaxCount] we created in the fixture.
     for (size_t i = 0; i < sorted1.size(); i++) {
         PotentialBucketOptions bucketOptions;
-        std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> kNoneVec;
-        kNoneVec.push_back(std::make_pair(sorted1[i], bucket_catalog::RolloverReason::kNone));
+        std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> kNoneVec;
+        kNoneVec.push_back(std::make_pair(sorted1[i], RolloverReason::kNone));
         absl::InlinedVector<Bucket*, 8> kNoneBucket =
             _generateBucketsWithMeasurements(_ns1, _uuid1, kNoneVec);
         bucketOptions.kNoneBucket = kNoneBucket[0];
@@ -3774,41 +5865,38 @@ TEST_F(CreateOrderedPotentialBucketsVectorTest,
 
         // We will invariant if we have > 1 uncleared, kNone bucket. So we have to set the
         // RolloverReason for the next kNone open bucket we create.
-        kNoneBucket[0]->rolloverReason = bucket_catalog::RolloverReason::kTimeForward;
+        kNoneBucket[0]->rolloverReason = RolloverReason::kTimeForward;
     }
 }
 
-TEST_F(CreateOrderedPotentialBucketsVectorTest,
-       CreateOrderedPotentialBucketsVectorWithkNoneBucket) {
+TEST_F(BucketCatalogTest, CreateOrderedPotentialBucketsVectorWithNoneBucket) {
     for (size_t i = 0; i < allMeasurementVecs.size(); i++) {
         PotentialBucketOptions bucketOptions;
         // Create soft-closed buckets.
-        std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>> softClosedVec =
-            _getPairsVector(allMeasurementVecs[i], bucket_catalog::RolloverReason::kTimeForward);
+        std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> softClosedVec =
+            _getMeasurementRolloverReasonVec(allMeasurementVecs[i], RolloverReason::kTimeForward);
         absl::InlinedVector<Bucket*, 8> softClosedBucket =
             _generateBucketsWithMeasurements(_ns1, _uuid1, softClosedVec);
         bucketOptions.kSoftClosedBuckets = softClosedBucket;
         for (size_t j = 0; j < allMeasurementVecs.size(); j++) {
             // Create archived buckets.
-            std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>
-                archivedVec = _getPairsVector(allMeasurementVecs[j],
-                                              bucket_catalog::RolloverReason::kTimeBackward);
+            std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> archivedVec =
+                _getMeasurementRolloverReasonVec(allMeasurementVecs[j],
+                                                 RolloverReason::kTimeBackward);
             absl::InlinedVector<Bucket*, 8> archivedBucket =
                 _generateBucketsWithMeasurements(_ns1, _uuid1, archivedVec);
             bucketOptions.kArchivedBuckets = archivedBucket;
             for (size_t i = 0; i < sorted1.size(); i++) {
-                std::vector<std::pair<std::vector<BSONObj>, bucket_catalog::RolloverReason>>
-                    kNoneVec;
-                kNoneVec.push_back(
-                    std::make_pair(sorted1[i], bucket_catalog::RolloverReason::kNone));
+                std::vector<std::pair<std::vector<BSONObj>, RolloverReason>> kNoneVec;
+                kNoneVec.push_back(std::make_pair(sorted1[i], RolloverReason::kNone));
                 absl::InlinedVector<Bucket*, 8> kNoneBucket =
                     _generateBucketsWithMeasurements(_ns1, _uuid1, kNoneVec);
                 bucketOptions.kNoneBucket = kNoneBucket[0];
                 _testCreateOrderedPotentialBucketsVector(bucketOptions);
 
-                // We will invariant if we have > 1 uncleared, kNone bucket. So we have to set the
-                // RolloverReason for the next kNone open bucket we create.
-                kNoneBucket[0]->rolloverReason = bucket_catalog::RolloverReason::kTimeForward;
+                // We will invariant if we have > 1 uncleared, kNone bucket. So we have to set
+                // the RolloverReason for the next kNone open bucket we create.
+                kNoneBucket[0]->rolloverReason = RolloverReason::kTimeForward;
             }
         }
     }

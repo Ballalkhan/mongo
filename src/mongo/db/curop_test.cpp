@@ -496,6 +496,35 @@ TEST(CurOpTest, MemoryStatsDisplayedIfNonZero) {
     ASSERT_EQ(15, res.getIntField("maxUsedMemBytes"));
 }
 
+TEST(CurOpTest, ReportStateIncludesMemoryStatsIfNonZero) {
+    RAIIServerParameterControllerForTest featureFlagController("featureFlagQueryMemoryTracking",
+                                                               true);
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+    auto curOp = CurOp::get(*opCtx);
+
+    // If the memory stats are zero, they are *not* included in the state.
+    {
+        BSONObjBuilder bob;
+        curOp->reportState(&bob, SerializationContext{});
+        BSONObj state = bob.obj();
+        ASSERT_FALSE(state.hasField("inUseMemBytes"));
+        ASSERT_FALSE(state.hasField("maxUsedMemBytes"));
+    }
+
+    // If the memory stats are not zero, they *are* included in the state.
+    {
+        BSONObjBuilder bob;
+        curOp->setMemoryTrackingStats(128, 256);
+        curOp->reportState(&bob, SerializationContext{});
+        BSONObj state = bob.obj();
+        ASSERT_TRUE(state.hasField("inUseMemBytes"));
+        ASSERT_EQ(state["inUseMemBytes"].Long(), 128);
+        ASSERT_TRUE(state.hasField("maxUsedMemBytes"));
+        ASSERT_EQ(state["maxUsedMemBytes"].Long(), 256);
+    }
+}
+
 TEST(CurOpTest, ShouldNotReportFailpointMsgIfNotSet) {
     QueryTestServiceContext serviceContext;
     auto opCtx = serviceContext.makeOperationContext();
@@ -678,15 +707,13 @@ TEST(CurOpTest, SlowLogFinishesWithDuration) {
 
     const OpDebug& opDebug = curop->debug();
     SingleThreadedLockStats lockStats;
-    ResourceConsumption::OperationMetrics opMetrics;
-    opMetrics.readMetrics.docsRead.observeOne(255);
 
     curop->ensureStarted();
     curop->done();
     curop->calculateCpuTime();
 
     auto pattrs = std::make_unique<logv2::DynamicAttributes>();
-    opDebug.report(opCtx.get(), &lockStats, &opMetrics, {}, 0, pattrs.get());
+    opDebug.report(opCtx.get(), &lockStats, {}, 0, pattrs.get());
 
     logv2::TypeErasedAttributeStorage attrs{*pattrs};
     ASSERT_GTE(attrs.size(), 1);

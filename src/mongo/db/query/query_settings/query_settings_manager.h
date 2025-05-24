@@ -54,27 +54,23 @@
 #include "mongo/platform/rwmutex.h"
 #include "mongo/stdx/trusted_hasher.h"
 
-namespace mongo {
-/**
- * Truncates the 256 bit QueryShapeHash by taking only the first sizeof(size_t) bytes.
- */
-class QueryShapeHashHasher {
-public:
-    size_t operator()(const query_shape::QueryShapeHash& hash) const {
-        return ConstDataView(reinterpret_cast<const char*>(hash.data())).read<size_t>();
-    }
-};
-template <>
-struct IsTrustedHasher<QueryShapeHashHasher, query_shape::QueryShapeHash> : std::true_type {};
-
-namespace query_settings {
+namespace mongo::query_settings {
 
 using QueryInstance = BSONObj;
 
-using QueryShapeConfigurationsMap =
-    absl::flat_hash_map<query_shape::QueryShapeHash,
-                        std::pair<QuerySettings, boost::optional<QueryInstance>>,
-                        QueryShapeHashHasher>;
+/**
+ * The in-memory representation for the data stored in QueryShapeConfiguration.
+ */
+struct QueryShapeConfigCachedEntry {
+    QuerySettings querySettings;
+
+    // TODO SERVER-105064 Remove this property once 9.0 is last-lts.
+    boost::optional<QueryInstance> representativeQuery_deprecated;
+    bool hasRepresentativeQuery;
+};
+
+using QueryShapeConfigurationsMap = absl::
+    flat_hash_map<query_shape::QueryShapeHash, QueryShapeConfigCachedEntry, QueryShapeHashHasher>;
 
 /**
  * Stores all query shape configurations for a tenant, containing the same information as the
@@ -89,6 +85,26 @@ struct VersionedQueryShapeConfigurations {
 
     /**
      * Cluster time of the current version of the QuerySettingsClusterParameter.
+     */
+    LogicalTime clusterParameterTime;
+};
+
+/**
+ * Result structure for 'QuerySettingsManager::getQuerySettingsForQueryShapeHash()'.
+ */
+struct QuerySettingsLookupResult {
+    /**
+     * The query settings associated with the given query shape hash.
+     */
+    QuerySettings querySettings;
+
+    /**
+     * Whether the given query shape hash has an associated representative query.
+     */
+    bool hasRepresentativeQuery;
+
+    /**
+     * Cluster time representing the current version of the QuerySettingsClusterParameter.
      */
     LogicalTime clusterParameterTime;
 };
@@ -112,7 +128,7 @@ public:
      * Returns QuerySettings associated with a query which query shape hash is 'queryShapeHash' for
      * the given tenant.
      */
-    boost::optional<QuerySettings> getQuerySettingsForQueryShapeHash(
+    boost::optional<QuerySettingsLookupResult> getQuerySettingsForQueryShapeHash(
         const query_shape::QueryShapeHash& queryShapeHash,
         const boost::optional<TenantId>& tenantId) const;
 
@@ -151,5 +167,4 @@ private:
     absl::flat_hash_map<boost::optional<TenantId>, VersionedQueryShapeConfigurations>
         _tenantIdToVersionedQueryShapeConfigurationsMap;
 };
-};  // namespace query_settings
-}  // namespace mongo
+};  // namespace mongo::query_settings

@@ -60,6 +60,7 @@
 #include "mongo/db/pipeline/legacy_runtime_constants_gen.h"
 #include "mongo/db/profile_settings.h"
 #include "mongo/db/s/ddl_lock_manager.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/shard_id.h"
 #include "mongo/db/timeseries/catalog_helper.h"
@@ -73,7 +74,6 @@
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/stale_shard_version_helpers.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
@@ -209,51 +209,61 @@ ShardsvrDropIndexesCommand::Invocation::Response ShardsvrDropIndexesCommand::Inv
     StaleConfigRetryState retryState;
     return shardVersionRetry(
         opCtx, Grid::get(opCtx)->catalogCache(), resolvedNs, "dropIndexes", [&] {
-            // If the collection is sharded, we target only the primary shard and the shards that
-            // own chunks for the collection.
-            const auto cri = uassertStatusOK(
-                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, resolvedNs));
+            return routing_context_utils::withValidatedRoutingContext(
+                opCtx, {resolvedNs}, [&](RoutingContext& routingCtx) {
+                    auto shardResponses =
+                        scatterGatherVersionedTargetByRoutingTableNoThrowOnStaleShardVersionErrors(
+                            opCtx,
+                            resolvedNs,
+                            routingCtx,
+                            retryState.shardsWithSuccessResponses,
+                            CommandHelpers::filterCommandRequestForPassthrough(dropIdxBSON),
+                            ReadPreferenceSetting::get(opCtx),
+                            Shard::RetryPolicy::kNotIdempotent,
+                            BSONObj() /*query*/,
+                            BSONObj() /*collation*/,
+                            boost::none /*letParameters*/,
+                            boost::none /*runtimeConstants*/);
 
-            auto shardResponses =
-                scatterGatherVersionedTargetByRoutingTableNoThrowOnStaleShardVersionErrors(
-                    opCtx,
-                    resolvedNs,
-                    cri,
-                    retryState.shardsWithSuccessResponses,
-                    CommandHelpers::filterCommandRequestForPassthrough(dropIdxBSON),
-                    ReadPreferenceSetting::get(opCtx),
-                    Shard::RetryPolicy::kNotIdempotent,
-                    BSONObj() /*query*/,
-                    BSONObj() /*collation*/,
-                    boost::none /*letParameters*/,
-                    boost::none /*runtimeConstants*/);
+                    // Append responses we've received from previous retries of this operation due
+                    // to a stale config error.
+                    shardResponses.insert(shardResponses.end(),
+                                          retryState.shardSuccessResponses.begin(),
+                                          retryState.shardSuccessResponses.end());
 
-            // Append responses we've received from previous retries of this operation due to a
-            // stale config error.
-            shardResponses.insert(shardResponses.end(),
-                                  retryState.shardSuccessResponses.begin(),
-                                  retryState.shardSuccessResponses.end());
+                    std::string errmsg;
+                    BSONObjBuilder output, rawResBuilder;
+                    bool isShardedCollection =
+                        routingCtx.getCollectionRoutingInfo(resolvedNs).isSharded();
+                    const auto aggregateResponse = appendRawResponses(
+                        opCtx, &errmsg, &rawResBuilder, shardResponses, isShardedCollection);
 
-            std::string errmsg;
-            BSONObjBuilder output, rawResBuilder;
-            bool isShardedCollection = cri.isSharded();
-            const auto aggregateResponse = appendRawResponses(
-                opCtx, &errmsg, &rawResBuilder, shardResponses, isShardedCollection);
+                    // If we have a stale config error, update the success shards for the upcoming
+                    // retry.
+                    if (!aggregateResponse.responseOK && aggregateResponse.firstStaleConfigError) {
+                        updateStateForStaleConfigRetry(opCtx, aggregateResponse, &retryState);
+                        uassertStatusOK(*aggregateResponse.firstStaleConfigError);
+                    }
 
-            // If we have a stale config error, update the success shards for the upcoming retry.
-            if (!aggregateResponse.responseOK && aggregateResponse.firstStaleConfigError) {
-                updateStateForStaleConfigRetry(opCtx, aggregateResponse, &retryState);
-                uassertStatusOK(*aggregateResponse.firstStaleConfigError);
-            }
+                    if (!isShardedCollection && aggregateResponse.responseOK) {
+                        CommandHelpers::filterCommandReplyForPassthrough(
+                            shardResponses[0].swResponse.getValue().data, &output);
+                    }
 
-            if (!isShardedCollection && aggregateResponse.responseOK) {
-                CommandHelpers::filterCommandReplyForPassthrough(
-                    shardResponses[0].swResponse.getValue().data, &output);
-            }
+                    output.appendElements(rawResBuilder.obj());
+                    CommandHelpers::appendSimpleCommandStatus(
+                        output, aggregateResponse.responseOK, errmsg);
 
-            output.appendElements(rawResBuilder.obj());
-            CommandHelpers::appendSimpleCommandStatus(output, aggregateResponse.responseOK, errmsg);
-            return Response(output.obj());
+                    // TODO SERVER-104795 we can fail to validate routing tables for a nss in the
+                    // event of a concurrent chink migration that moves requested chunks from one
+                    // shard to a shard that had previously been marked as returning a successful
+                    // response for dropIndexes(). We skip RoutingContext validation here to
+                    // avoiding hitting the assertion in validateOnDestroy(), but this should be
+                    // removed after the bug is patched.
+                    routingCtx.skipValidation();
+
+                    return Response(output.obj());
+                });
         });
 }
 

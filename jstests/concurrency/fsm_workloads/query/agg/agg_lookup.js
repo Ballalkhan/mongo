@@ -2,11 +2,6 @@
  * agg_lookup.js
  *
  * Runs a $lookup aggregation simultaneously with updates.
- *
- * TODO SERVER-90385 Enable this test in embedded router suites
- * @tags: [
- *   temp_disabled_embedded_router_uncategorized,
- * ]
  */
 import {interruptedQueryErrors} from "jstests/concurrency/fsm_libs/assert.js";
 import {FeatureFlagUtil} from "jstests/libs/feature_flag_util.js";
@@ -40,14 +35,12 @@ export const $config = (function() {
 
                     arr = cursor.toArray();
                 } catch (e) {
-                    if (TxnUtil.isTransientTransactionError(e)) {
-                        throw e;
-                    }
-                    if (TestData.runningWithShardStepdowns || TestData.runningWithBalancer) {
-                        // When running with stepdowns or with balancer, we expect to sometimes see
-                        // the query killed.
-                        assert.contains(e.code, interruptedQueryErrors);
-                    } else {
+                    // When running with stepdowns or with balancer, we expect to sometimes see
+                    // the query killed.
+                    const isExpectedError =
+                        (TestData.runningWithShardStepdowns || TestData.runningWithBalancer) &&
+                        interruptedQueryErrors.includes(e.code);
+                    if (!isExpectedError) {
                         throw e;
                     }
                 }

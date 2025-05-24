@@ -212,6 +212,16 @@ Queries should instead match on specific nested fields.
 CRUD operations can interact directly with the bucketed data format by setting the `rawData` command
 parameter.
 
+## Batched Inserts
+
+When a batch of inserts is processed by the write path, this typically comes from an `insertMany` command,
+the batch is [organized by meta value and sorted](https://github.com/10gen/mongo/blob/5e5a0d995995fc4404c6e32546ed0580954b1e39/src/mongo/db/timeseries/bucket_catalog/bucket_catalog.h#L506-L527) in time ascending order to ensure efficient bucketing
+and insertion. Prior versions would perform bucket targeting for each measurement in the order the user
+specified. This could lead to poor insert performance and very sub-optimal bucketing behavior if the user's
+batch was in time descending order. This change in batching also significantly reduces the number of stripe
+lock acquisitions which in turn reduces contention on the stripe lock. The stripe lock is acquired roughly
+once per batch per meta, instead of per measurement during the staging phase of a write.
+
 ## Indexes
 
 In order to support queries on the time-series collection that could benefit from indexed access
@@ -310,9 +320,9 @@ the index does not exist, then query-based reopening will not be used.
 
 When we reopen compressed buckets, in order to avoid fully decompressing and then fully re-compressing
 the bucket we instantiate the bucket's BSONColumnBuilders from the existing BSONColumn binaries. Currently
-this only supports scalar values; if the interleave mode (the mode where we are dealing with different types)
-is detected in the input BSONColumn binary, we will fully decompress and re-compress the bucket we are
-reopening.
+BSONColumn only supports optimized instantiation for scalar values; if an object or array type is
+[detected](https://github.com/mongodb/mongo/blob/5e5a0d995995fc4404c6e32546ed0580954b1e39/src/mongo/bson/column/bsoncolumnbuilder.cpp#L1380) in the input BSONColumn binary, the BSONColumnBuilder will fully decompress and re-create the
+BSONColumn for the metric we are reopening.
 
 ### Bucket Closure and Archival
 
@@ -363,7 +373,7 @@ some reasonable presets of "seconds", "minutes" and "hours".
 | ----------- | ----------------------- | ---------------------- |
 | _Seconds_   | 60 (1 minute)           | 3,600 (1 hour)         |
 | _Minutes_   | 3,600 (1 hour)          | 86,400 (1 day)         |
-| _Hours_     | 86,400 (1 day)          | 2,559,200 (30 days)    |
+| _Hours_     | 86,400 (1 day)          | 2,592,000 (30 days)    |
 
 Chart sources: [bucketRoundingSeconds](https://github.com/10gen/mongo/blob/279417f986c9792b6477b060dc65b926f3608529/src/mongo/db/timeseries/timeseries_options.cpp#L368-L381) and [bucketMaxSpanSeconds](https://github.com/10gen/mongo/blob/279417f986c9792b6477b060dc65b926f3608529/src/mongo/db/timeseries/timeseries_options.cpp#L259-L273).
 
@@ -439,6 +449,26 @@ time-series update/delete.
 Time-series deletes support retryable writes with the existing mechanisms. For time-series updates,
 they are run through the Internal Transaction API to make sure the two writes to storage are atomic.
 
+### Errors When Staging and Committing Measurements
+
+We have three phases of a time-series write. Each phase of the time-series write has a distinct acquisition of the stripe lock:
+
+1. Staging - The bucket catalog represents the in-memory representation of buckets. Staging involves changing bucket metadata to prepare for the insertion of measurements into the bucket catalog, but doesn't involve compressing or inserting measurements into the bucket catalog.
+2. Committing - Compressing measurements into an appropriate bucket document and writing the bucket document to storage.
+3. Finish - Modifying the bucket catalog to reflect what was written to storage.
+
+> [!NOTE]
+> Retrying time-series writes within the server is a distinct process from retryable writes, which is retrying writes from the outside the server in the driver. This section discusses retries within the server, which also handles retryable writes (see contains retry in the image below).
+
+![SERVER-103329 Drawings (7)](https://github.com/user-attachments/assets/aceb7dfb-45f3-4aac-a0cb-744f080ead76)
+
+#### Error Examples
+
+- Continuable
+  - DuplicateKey: occurs when there is collision from OID generation when we attempt to perform a timeseries insert from a batch.
+- Non-continuable
+  - Exceptions: such as a StaleConfig exception when attempting to acquire the buckets collection.
+
 ### Calculating Memory Usage
 
 Memory usage for Buckets, the BucketCatalog, and other aspects of time-series collection internals (Stripes, BucketMetadata, etc)
@@ -448,6 +478,29 @@ is calculated using the [Timeseries Tracking Allocator](https://github.com/10gen
 
 When bucket compression fails, we will fail the insert prompting the user to retry the write and "freeze"
 the bucket that we failed to compress. Once a bucket is frozen, we will no longer attempt to write to it.
+
+### Stripes
+
+The bucket catalog uses the concept of lock striping to provide efficient parallelism and synchronization across
+CRUD operations to buckets in the bucket catalog. The potentially very large number of meta values (thousands or millions)
+in the time-series collection are hashed down to a hard-coded number of 32 stripes. Each meta value will always map to the
+same stripe. This hash function is opaque to the user, and not configurable.
+
+Performing a time-series write, beginning in 8.2+, acquires the stripe lock 3 times for each write to the collection, once for
+each phase described above in [Errors When Staging and Committing Measurements](#Errors-When-Staging-and-Committing-Measurements).
+
+<img width="1364" alt="bucket_catalog_stripe" src="https://github.com/user-attachments/assets/c6016335-34e3-4f62-b46a-0f0a970f2c05" />
+
+Recall that each bucket contains up to [timeseriesBucketMaxCount](https://github.com/10gen/mongo/blob/0f3a0dfd67b05e8095c70a03c7d7406f9e623277/src/mongo/db/timeseries/timeseries.idl#L58) (1,000) measurements within a span of time, `bucketMaxSpanSeconds`. And further, the bucket
+catalog maintains an invariant of at most 1 open bucket per unique meta value. This diagram shows
+how measurements map to each open bucket, which map to a specific stripe. The hashing function may not distribute the
+client's writes to stripes evenly, but on the whole there is a good chance that stripe contention won't be a bottleneck since
+there are often more or the same number of stripes to cores on the database server. And note that certain stripes may be hot
+if the workload accesses many buckets (meta values) that map to the same stripe. In 8.2+, while holding the stripe lock during
+a write, only a small amount of work is done intentionally. This has lessened the impact of stripe contention.
+
+The [Stripe](https://github.com/10gen/mongo/blob/0f3a0dfd67b05e8095c70a03c7d7406f9e623277/src/mongo/db/timeseries/bucket_catalog/bucket_catalog.h#L152-L186) struct stores most of the core components of the [Bucket Catalog](https://github.com/10gen/mongo/blob/0f3a0dfd67b05e8095c70a03c7d7406f9e623277/src/mongo/db/timeseries/bucket_catalog/bucket_catalog.h#L198-L228). The structures within it generally compose
+the memory usage of the Bucket Catalog (see: [bucket_catalog::getMemoryUsage](https://github.com/10gen/mongo/blob/0f3a0dfd67b05e8095c70a03c7d7406f9e623277/src/mongo/db/timeseries/bucket_catalog/bucket_catalog.cpp#L203-L219)).
 
 # References
 

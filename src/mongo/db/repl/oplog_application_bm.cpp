@@ -86,6 +86,8 @@
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/collection_sharding_state_factory_shard.h"
+#include "mongo/db/s/database_sharding_state_factory_shard.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_entry_point_shard_role.h"
@@ -98,7 +100,6 @@
 #include "mongo/logv2/log_component_settings.h"
 #include "mongo/logv2/log_manager.h"
 #include "mongo/logv2/log_severity.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/util/assert_util.h"
@@ -197,6 +198,8 @@ public:
         ShardingState::create(_svcCtx);
         CollectionShardingStateFactory::set(
             _svcCtx, std::make_unique<CollectionShardingStateFactoryShard>(_svcCtx));
+        DatabaseShardingStateFactory::set(_svcCtx,
+                                          std::make_unique<DatabaseShardingStateFactoryShard>());
 
         MongoDSessionCatalog::set(
             _svcCtx,

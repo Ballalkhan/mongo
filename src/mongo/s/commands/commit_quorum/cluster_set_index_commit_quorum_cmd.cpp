@@ -51,10 +51,9 @@
 #include "mongo/db/pipeline/legacy_runtime_constants_gen.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
-#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/cluster_commands_helpers.h"
-#include "mongo/s/grid.h"
+#include "mongo/s/router_role.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
 
@@ -124,31 +123,33 @@ public:
         LOGV2_DEBUG(
             22757, 1, "setIndexCommitQuorum", logAttrs(nss), "command"_attr = redact(cmdObj));
 
-        auto cri =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-        auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
-            opCtx,
-            nss,
-            cri,
-            applyReadWriteConcern(
-                opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kNotIdempotent,
-            BSONObj() /*query*/,
-            BSONObj() /*collation*/,
-            boost::none /*letParameters*/,
-            boost::none /*runtimeConstants*/);
+        return routing_context_utils::withValidatedRoutingContext(
+            opCtx, {nss}, [&](RoutingContext& routingCtx) {
+                auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
+                    opCtx,
+                    nss,
+                    routingCtx,
+                    applyReadWriteConcern(
+                        opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
+                    ReadPreferenceSetting::get(opCtx),
+                    Shard::RetryPolicy::kNotIdempotent,
+                    BSONObj() /*query*/,
+                    BSONObj() /*collation*/,
+                    boost::none /*letParameters*/,
+                    boost::none /*runtimeConstants*/);
 
-        std::string errmsg;
-        const bool ok =
-            appendRawResponses(opCtx, &errmsg, &result, std::move(shardResponses)).responseOK;
-        CommandHelpers::appendSimpleCommandStatus(result, ok, errmsg);
+                std::string errmsg;
+                const bool ok =
+                    appendRawResponses(opCtx, &errmsg, &result, std::move(shardResponses))
+                        .responseOK;
+                CommandHelpers::appendSimpleCommandStatus(result, ok, errmsg);
 
-        if (ok) {
-            LOGV2(5688700, "Index commit quorums set", logAttrs(nss));
-        }
+                if (ok) {
+                    LOGV2(5688700, "Index commit quorums set", logAttrs(nss));
+                }
 
-        return ok;
+                return ok;
+            });
     }
 };
 MONGO_REGISTER_COMMAND(SetIndexCommitQuorumCommand).forRouter();

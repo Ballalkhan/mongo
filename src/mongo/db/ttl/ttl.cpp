@@ -82,7 +82,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/shard_role.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/db/timeseries/timeseries_constants.h"
 #include "mongo/db/timeseries/timeseries_gen.h"
 #include "mongo/db/transaction_resources.h"
@@ -470,8 +469,6 @@ bool TTLMonitor::_doTTLIndexDelete(OperationContext* opCtx,
             return false;
         }
 
-        ResourceConsumption::ScopedMetricsCollector scopedMetrics(opCtx, nss->dbName());
-
         if (info.isClustered()) {
             const auto& collOptions = collectionPtr->getCollectionOptions();
             uassert(5400701,
@@ -496,7 +493,7 @@ bool TTLMonitor::_doTTLIndexDelete(OperationContext* opCtx,
             return _deleteExpiredWithIndex(
                 opCtx, at, ttlCollectionCache, coll, info.getIndexName());
         }
-    } catch (const ExceptionForCat<ErrorCategory::StaleShardVersionError>& ex) {
+    } catch (const ExceptionFor<ErrorCategory::StaleShardVersionError>& ex) {
         // The TTL index tried to delete some information from a sharded collection
         // through a direct operation against the shard but the filtering metadata was
         // not available or the index version in the cache was stale.

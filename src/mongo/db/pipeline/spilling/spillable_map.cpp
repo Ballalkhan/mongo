@@ -28,7 +28,7 @@
  */
 
 #include "mongo/db/pipeline/spilling/spillable_map.h"
-#include "mongo/db/pipeline/spilling/record_store_batch_writer.h"
+#include "mongo/db/pipeline/spilling/spill_table_batch_writer.h"
 #include "mongo/db/query/util/spill_util.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/transaction_resources.h"
@@ -36,19 +36,17 @@
 
 namespace mongo {
 
-void SpillableDocumentMap::add(Document document) {
-    size_t size = document.getApproximateSize();
-    Value id = document.getField("_id");
+void SpillableDocumentMapImpl::_add(Value id, Document document, size_t size) {
     auto [_, inserted] = _memMap.emplace(
         std::move(id),
         MemoryUsageTokenWith<Document>{MemoryUsageToken{size, &_memTracker}, std::move(document)});
-    tassert(2398003, "duplicate keys are not supported in SpillableDocumentMap", inserted);
+    tassert(2398003, "duplicate keys are not supported in SpillableDocumentMapImpl", inserted);
     if (!_memTracker.withinMemoryLimit()) {
         spillToDisk();
     }
 }
 
-bool SpillableDocumentMap::contains(const Value& id) const {
+bool SpillableDocumentMapImpl::contains(const Value& id) const {
     if (_memMap.contains(id)) {
         return true;
     }
@@ -56,19 +54,19 @@ bool SpillableDocumentMap::contains(const Value& id) const {
         return false;
     }
 
-    return _expCtx->getMongoProcessInterface()->checkRecordInRecordStore(
-        _expCtx, _diskMap->rs(), computeKey(id));
+    return _expCtx->getMongoProcessInterface()->checkRecordInSpillTable(
+        _expCtx, *_diskMap, computeKey(id));
 }
 
-void SpillableDocumentMap::clear() {
+void SpillableDocumentMapImpl::clear() {
     _memMap.erase(_memMap.begin(), _memMap.end());
     if (_diskMap) {
-        _expCtx->getMongoProcessInterface()->truncateRecordStore(_expCtx, _diskMap->rs());
+        _expCtx->getMongoProcessInterface()->truncateSpillTable(_expCtx, *_diskMap);
         _diskMapSize = 0;
     }
 }
 
-void SpillableDocumentMap::dispose() {
+void SpillableDocumentMapImpl::dispose() {
     _memMap.clear();
     if (_diskMap) {
         updateStorageSizeStat();
@@ -77,7 +75,11 @@ void SpillableDocumentMap::dispose() {
     }
 }
 
-void SpillableDocumentMap::spillToDisk() {
+void SpillableDocumentMapImpl::spillToDisk() {
+    if (!hasInMemoryData()) {
+        return;
+    }
+
     uassertStatusOK(ensureSufficientDiskSpaceForSpilling(
         storageGlobalParams.dbpath, internalQuerySpillingMinAvailableDiskSpaceBytes.load()));
 
@@ -85,7 +87,7 @@ void SpillableDocumentMap::spillToDisk() {
         initDiskMap();
     }
 
-    RecordStoreBatchWriter writer(_expCtx, _diskMap->rs());
+    SpillTableBatchWriter writer(_expCtx, *_diskMap);
     while (!_memMap.empty()) {
         auto it = _memMap.begin();
         writer.write(computeKey(it->first), it->second.value().toBson());
@@ -98,38 +100,37 @@ void SpillableDocumentMap::spillToDisk() {
         1,
         writer.writtenBytes(),
         writer.writtenRecords(),
-        static_cast<uint64_t>(_diskMap->rs()->storageSize(
+        static_cast<uint64_t>(_diskMap->storageSize(
             *shard_role_details::getRecoveryUnit(_expCtx->getOperationContext()))));
 }
 
-void SpillableDocumentMap::initDiskMap() {
+void SpillableDocumentMapImpl::initDiskMap() {
     uassert(ErrorCodes::QueryExceededMemoryLimitNoDiskUseAllowed,
             "Exceeded memory limit and can't spill to disk. Set allowDiskUse: true to allow "
             "spilling",
             _expCtx->getAllowDiskUse());
 
-    _diskMap =
-        _expCtx->getMongoProcessInterface()->createTemporaryRecordStore(_expCtx, KeyFormat::String);
+    _diskMap = _expCtx->getMongoProcessInterface()->createSpillTable(_expCtx, KeyFormat::String);
     _diskMapSize = 0;
 }
 
-RecordId SpillableDocumentMap::computeKey(const Value& id) const {
+RecordId SpillableDocumentMapImpl::computeKey(const Value& id) const {
     _builder.resetToEmpty();
     BSONObj obj = id.wrap("_");
     _builder.appendBSONElement(obj.firstElement());
     return RecordId{_builder.finishAndGetBuffer()};
 }
 
-void SpillableDocumentMap::updateStorageSizeStat() {
-    _stats.updateSpilledDataStorageSize(_diskMap->rs()->storageSize(
+void SpillableDocumentMapImpl::updateStorageSizeStat() {
+    _stats.updateSpilledDataStorageSize(_diskMap->storageSize(
         *shard_role_details::getRecoveryUnit(_expCtx->getOperationContext())));
 }
 
 template <bool IsConst>
-SpillableDocumentMap::IteratorImpl<IsConst>::IteratorImpl(MapPointer map)
+SpillableDocumentMapImpl::IteratorImpl<IsConst>::IteratorImpl(MapPointer map)
     : _map(map), _memIt(_map->_memMap.begin()) {
     if (_map->_diskMap != nullptr) {
-        _diskIt = _map->_diskMap->rs()->getCursor(_map->_expCtx->getOperationContext());
+        _diskIt = _map->_diskMap->getCursor(_map->_expCtx->getOperationContext());
         _diskItExhausted = false;
         saveDiskIt();
 
@@ -140,11 +141,11 @@ SpillableDocumentMap::IteratorImpl<IsConst>::IteratorImpl(MapPointer map)
 }
 
 template <bool IsConst>
-SpillableDocumentMap::IteratorImpl<IsConst>::IteratorImpl(MapPointer map, const EndTag&)
+SpillableDocumentMapImpl::IteratorImpl<IsConst>::IteratorImpl(MapPointer map, const EndTag&)
     : _map(map), _memIt(_map->_memMap.end()) {}
 
 template <bool IsConst>
-bool SpillableDocumentMap::IteratorImpl<IsConst>::operator==(const IteratorImpl& rhs) const {
+bool SpillableDocumentMapImpl::IteratorImpl<IsConst>::operator==(const IteratorImpl& rhs) const {
     if (this->memoryExhausted() != rhs.memoryExhausted()) {
         return false;
     }
@@ -156,14 +157,14 @@ bool SpillableDocumentMap::IteratorImpl<IsConst>::operator==(const IteratorImpl&
     }
     if (!this->diskExhausted()) {
         return ValueComparator::kInstance.compare(
-            this->_diskDocuments.front().value().getField("_id"),
-            rhs._diskDocuments.front().value().getField("_id"));
+                   this->_diskDocuments.front().value().getField("_id"),
+                   rhs._diskDocuments.front().value().getField("_id")) == 0;
     }
     return true;
 }
 
 template <bool IsConst>
-auto SpillableDocumentMap::IteratorImpl<IsConst>::operator++() -> IteratorImpl& {
+auto SpillableDocumentMapImpl::IteratorImpl<IsConst>::operator++() -> IteratorImpl& {
     if (!memoryExhausted()) {
         _memIt++;
         if (memoryExhausted()) {
@@ -172,14 +173,18 @@ auto SpillableDocumentMap::IteratorImpl<IsConst>::operator++() -> IteratorImpl& 
     } else if (!diskExhausted()) {
         _diskDocuments.pop_front();
         if (_diskDocuments.empty()) {
-            readNextBatchFromDisk();
+            if (_diskItExhausted) {
+                _diskIt.reset();
+            } else {
+                readNextBatchFromDisk();
+            }
         }
     }
     return *this;
 }
 
 template <bool IsConst>
-void SpillableDocumentMap::IteratorImpl<IsConst>::spill() {
+void SpillableDocumentMapImpl::IteratorImpl<IsConst>::releaseMemory() {
     if (!memoryExhausted()) {
         return;
     }
@@ -206,17 +211,17 @@ void SpillableDocumentMap::IteratorImpl<IsConst>::spill() {
 }
 
 template <bool IsConst>
-bool SpillableDocumentMap::IteratorImpl<IsConst>::memoryExhausted() const {
+bool SpillableDocumentMapImpl::IteratorImpl<IsConst>::memoryExhausted() const {
     return _memIt == _map->_memMap.end();
 }
 
 template <bool IsConst>
-bool SpillableDocumentMap::IteratorImpl<IsConst>::diskExhausted() const {
+bool SpillableDocumentMapImpl::IteratorImpl<IsConst>::diskExhausted() const {
     return _diskItExhausted && _diskDocuments.empty();
 }
 
 template <bool IsConst>
-void SpillableDocumentMap::IteratorImpl<IsConst>::readNextBatchFromDisk() {
+void SpillableDocumentMapImpl::IteratorImpl<IsConst>::readNextBatchFromDisk() {
     if (_diskItExhausted || !_diskDocuments.empty()) {
         return;
     }
@@ -238,30 +243,42 @@ void SpillableDocumentMap::IteratorImpl<IsConst>::readNextBatchFromDisk() {
 }
 
 template <bool IsConst>
-auto SpillableDocumentMap::IteratorImpl<IsConst>::getCurrentDocument() -> reference_type {
+auto SpillableDocumentMapImpl::IteratorImpl<IsConst>::getCurrentDocument() -> reference_type {
     if (!memoryExhausted()) {
         return _memIt->second.value();
     }
     if (!_diskDocuments.empty()) {
         return _diskDocuments.front().value();
     }
-    tasserted(2398002, "dereferencing invalid SpillableDocumentMap::IteratorImpl");
+    tasserted(2398002, "dereferencing invalid SpillableDocumentMapImpl::IteratorImpl");
 }
 
 template <bool IsConst>
-void SpillableDocumentMap::IteratorImpl<IsConst>::restoreDiskIt() {
+void SpillableDocumentMapImpl::IteratorImpl<IsConst>::restoreDiskIt() {
     _diskIt->reattachToOperationContext(_map->_expCtx->getOperationContext());
     bool restoreResult = _diskIt->restore();
     tassert(2398004, "Unable to restore disk cursor", restoreResult);
 }
 
 template <bool IsConst>
-void SpillableDocumentMap::IteratorImpl<IsConst>::saveDiskIt() {
+void SpillableDocumentMapImpl::IteratorImpl<IsConst>::saveDiskIt() {
     _diskIt->save();
     _diskIt->detachFromOperationContext();
 }
 
-template class SpillableDocumentMap::IteratorImpl<true>;
-template class SpillableDocumentMap::IteratorImpl<false>;
+template class SpillableDocumentMapImpl::IteratorImpl<true>;
+template class SpillableDocumentMapImpl::IteratorImpl<false>;
+
+void SpillableDocumentMap::add(Document document) {
+    Value id = document.getField("_id");
+    size_t size = document.getApproximateSize();
+    _add(id, std::move(document), size);
+}
+
+void SpillableValueSet::add(Value value) {
+    size_t size = value.getApproximateSize();
+    _add(std::move(value), Document{}, size);
+}
+
 
 }  // namespace mongo

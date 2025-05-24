@@ -133,6 +133,7 @@ variables:
       - func: "get engflow creds"
     teardown_task:
       - func: "f_expansions_write"
+      - func: "create bazel test report"
       - func: "attach report"
       - func: "attach artifacts"
       - func: "attach local resmoke invocation"
@@ -190,6 +191,7 @@ variables:
       - func: "f_expansions_write"
       - func: "run hang analyzer"
       - func: "wait for resmoke to shutdown"
+      - func: "save bazel run logs"
 
 ################################################
 #                    Tasks                     #
@@ -322,311 +324,6 @@ tasks:
           permissions: public-read
           content_type: application/tar
           display_name: Benchmarks
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_causal_consistency_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "non_live_record",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_causal_consistency_and_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "large",
-        "non_live_record",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_clusterwide_ops_add_remove_shards_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "common",
-        "read_concern_maj",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_local_read_write_multi_stmt_txn_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_local_read_write_multi_stmt_txn_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_multi_stmt_txn_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_multi_stmt_txn_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_replication_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_debug_mode",
-        "concurrency",
-        "common",
-        "read_concern_maj",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_xlarge_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: concurrency_embedded_router_replication_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "incompatible_mac",
-        "incompatible_ppc",
-        "incompatible_s390x",
-        "incompatible_debug_mode",
-        "concurrency",
-        "common",
-        "read_concern_maj",
-        "large",
-        "sharded",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-        vars:
-          use_large_distro: "true"
-          resmoke_jobs_max: 1
-
-  - <<: *gen_task_template
-    name: embedded_router_jscore_passthrough_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_jscore_passthrough_with_config_shard_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_jscore_passthrough_with_balancer_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "sharding",
-        "jscore",
-        "common",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: aggregation_embedded_router_jscore_passthrough_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_jscore_txns_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_jscore_txns_with_config_shard_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_sharded_collections_jscore_passthrough_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_sharded_collections_jscore_txns_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: aggregation_sharded_collections_embedded_router_jscore_passthrough_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "requires_all_feature_flags",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
-
-  - <<: *gen_task_template
-    name: embedded_router_sharded_collections_jscore_txns_with_config_shard_gen
-    tags:
-      [
-        "assigned_to_jira_team_server_catalog_and_routing",
-        "default",
-        "suggested_excluding_required__for_devprod_mitigation_only",
-        "embedded_router",
-      ]
-    commands:
-      - func: "generate resmoke tasks"
 
   - <<: *task_template
     name: failpoints
@@ -1533,7 +1230,7 @@ tasks:
           # We need to set the jobs factor to less than 1 because otherwise resmoke will parallelize
           # based on the CPU count and so the memory available per job will remain roughly the same
           # as when the task is run on small distro.
-          resmoke_jobs_factor: 0.3
+          resmoke_jobs_factor: 0.1
 
   - <<: *benchmark_template
     name: benchmarks_sharding
@@ -1915,7 +1612,7 @@ tasks:
       - func: "generate resmoke tasks"
 
   - <<: *gen_task_template
-    name: sharded_collections_jscore_passthrough_with_config_transitions_gen
+    name: sharded_collections_jscore_passthrough_with_config_transitions_and_add_remove_shard_gen
     tags:
       [
         "assigned_to_jira_team_server_cluster_scalability",
@@ -2140,7 +1837,7 @@ tasks:
       - func: "generate resmoke tasks"
 
   - <<: *gen_task_template
-    name: sharding_jscore_passthrough_with_config_transitions_gen
+    name: sharding_jscore_passthrough_with_config_transitions_and_add_remove_shard_gen
     tags:
       [
         "assigned_to_jira_team_server_cluster_scalability",
@@ -2269,7 +1966,7 @@ tasks:
       - func: "generate resmoke tasks"
 
   - <<: *gen_task_template
-    name: aggregation_unsplittable_collections_on_random_shard_passthrough_with_config_transitions_gen
+    name: aggregation_unsplittable_collections_on_random_shard_passthrough_with_config_transitions_and_add_remove_shard_gen
     # TODO SERVER-83445 Enable on non-all-feature-flag variants.
     tags:
       [
@@ -2327,6 +2024,28 @@ tasks:
       - func: "generate resmoke tasks"
 
   - <<: *gen_task_template
+    name: concurrency_sharded_replication_with_balancer_gen
+    tags:
+      [
+        "assigned_to_jira_team_server_catalog_and_routing",
+        "release_critical",
+        "incompatible_mac",
+        "incompatible_ppc",
+        "incompatible_s390x",
+        "incompatible_debug_mode",
+        "concurrency",
+        "common",
+        "read_concern_maj",
+        "large",
+        "sharded",
+      ]
+    commands:
+      - func: "generate resmoke tasks"
+        vars:
+          use_large_distro: "true"
+          resmoke_jobs_max: 1
+
+  - <<: *gen_task_template
     name: concurrency_sharded_replication_with_balancer_and_config_transitions_gen
     tags:
       [
@@ -2365,7 +2084,7 @@ tasks:
           resmoke_jobs_max: 1
 
   - <<: *gen_task_template
-    name: concurrency_sharded_multi_stmt_txn_with_balancer_and_config_transitions_gen
+    name: concurrency_sharded_multi_stmt_txn_with_balancer_and_config_transitions_and_add_remove_shard_gen
     tags:
       [
         "assigned_to_jira_team_server_catalog_and_routing",
@@ -2737,7 +2456,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_causal_consistency
           resmoke_args: --numClientsPerFixture=10
 
@@ -2762,7 +2481,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 2
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_kill_terminate_stepdown
           resmoke_args: --numClientsPerFixture=10
 
@@ -2791,7 +2510,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 2
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_kill_terminate_stepdown
           resmoke_args: >-
             --numClientsPerFixture=10
@@ -2825,6 +2544,34 @@ tasks:
           use_xlarge_distro: "true"
           resmoke_jobs_max: 1
 
+  - <<: *gen_task_template
+    name: config_fuzzer_concurrency_sharded_replication_with_balancer_gen
+    tags:
+      [
+        "assigned_to_jira_team_server_catalog_and_routing",
+        "concurrency",
+        "config_fuzzer",
+        "default",
+        "large",
+        "sharded",
+        "incompatible_tsan",
+        "incompatible_aubsan",
+        "incompatible_debug_mode",
+        "incompatible_inmemory",
+        "suggested_excluding_required__for_devprod_mitigation_only",
+      ]
+    commands:
+      - func: "generate resmoke tasks"
+        vars:
+          suite: concurrency_sharded_replication_with_balancer
+          resmoke_args: >-
+            --fuzzMongodConfigs=normal
+            --fuzzMongosConfigs=normal
+            --fuzzRuntimeParams
+            --excludeWithAnyTags=does_not_support_config_fuzzer
+          use_xlarge_distro: "true"
+          resmoke_jobs_max: 1
+
   ## jstestfuzz concurrent sharded cluster ##
   - <<: *jstestfuzz_template
     name: jstestfuzz_concurrent_sharded_gen
@@ -2847,7 +2594,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded
           resmoke_args: --numClientsPerFixture=10
 
@@ -2870,7 +2617,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: ${jstestfuzz_concurrent_num_files|10}
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_notablescan
           resmoke_args: --numClientsPerFixture=10
 
@@ -2892,7 +2639,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_causal_consistency
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -2917,7 +2664,7 @@ tasks:
           <<: *jstestfuzz_config_vars
           num_files: 5
           num_tasks: 5
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_kill_terminate_stepdown
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -2941,7 +2688,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
@@ -2965,7 +2712,7 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           resmoke_args: >-
             --mongodSetParameters='{logComponentVerbosity: {command: 2}}'
             --runNoFeatureFlagTests
@@ -2988,13 +2735,13 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
+          jstestfuzz_vars: --jsTestsDir jstests
           suite: jstestfuzz_sharded_notablescan
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
   ## jstestfuzz sharded cluster with config transitions ##
   - <<: *jstestfuzz_template
-    name: jstestfuzz_sharded_with_config_transitions_gen
+    name: jstestfuzz_sharded_with_config_transitions_and_add_remove_shard_gen
     # TODO(SERVER-69996) remove "incompatible_debug_mode" tag
     tags:
       [
@@ -3010,8 +2757,8 @@ tasks:
       - func: "generate resmoke tasks"
         vars:
           <<: *jstestfuzz_config_vars
-          jstestfuzz_vars: --jsTestsDir ../jstests
-          suite: jstestfuzz_sharded_with_config_transitions
+          jstestfuzz_vars: --jsTestsDir jstests
+          suite: jstestfuzz_sharded_with_config_transitions_and_add_remove_shard
           resmoke_args: "--mongodSetParameters='{logComponentVerbosity: {command: 2}}'"
 
   - <<: *gen_task_template

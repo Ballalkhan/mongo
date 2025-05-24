@@ -111,7 +111,8 @@ Status IndexBuildBlock::initForResume(OperationContext* opCtx,
     if (phase == IndexBuildPhaseEnum::kBulkLoad) {
         // A bulk cursor can only be opened on a fresh table, so we drop the table that was created
         // before shutdown and recreate it.
-        auto status = DurableCatalog::get(opCtx)->dropAndRecreateIndexIdentForResume(
+        auto collectionOptions = collection->getCollectionOptions();
+        auto status = durable_catalog::dropAndRecreateIndexIdentForResume(
             opCtx,
             collection->ns(),
             collection->getCollectionOptions(),

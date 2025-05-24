@@ -1075,8 +1075,6 @@ mongo_cc_library(
     deps = [
         "//src/mongo:base",
         "//src/mongo/client:clientdriver_network",
-        "//src/mongo/db/auth",
-        "//src/mongo/db/auth:authorization_manager_global",
         "//src/mongo/util/net:network",
     ],
 )
@@ -1379,6 +1377,7 @@ mongo_cc_library(
         "rollback_impl.h",
     ],
     deps = [
+        ":intent_registry",
         ":optime",
         ":repl_coordinator_interface",
         ":replica_set_aware_service",
@@ -1487,7 +1486,6 @@ mongo_cc_library(
         "//src/mongo/db/index_builds:index_builds_coordinator",
         "//src/mongo/db/op_observer",
         "//src/mongo/db/query/query_stats",
-        "//src/mongo/db/s:sharding_runtime_d",
         "//src/mongo/db/session:kill_sessions_local",
         "//src/mongo/db/session:session_catalog_mongod",
         "//src/mongo/db/stats:counters",
@@ -1545,6 +1543,7 @@ mongo_cc_library(
     deps = [
         "data_replicator_external_state_impl",
         "delayable_timeout_callback",
+        "intent_registry",
         "repl_coordinator_interface",
         "repl_server_parameters",
         "repl_settings",

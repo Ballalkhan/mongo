@@ -56,10 +56,9 @@
 #include "mongo/executor/remote_command_response.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/cluster_commands_helpers.h"
-#include "mongo/s/grid.h"
+#include "mongo/s/router_role.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/str.h"
@@ -119,52 +118,55 @@ public:
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
         const BSONObj query;
-        const auto cri =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-        auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
-            opCtx,
-            nss,
-            cri,
-            applyReadWriteConcern(
-                opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kIdempotent,
-            query,
-            CollationSpec::kSimpleSpec,
-            boost::none /*letParameters*/,
-            boost::none /*runtimeConstants*/);
 
-        // Sort shard responses by shard id.
-        std::sort(shardResponses.begin(),
-                  shardResponses.end(),
-                  [](const AsyncRequestsSender::Response& response1,
-                     const AsyncRequestsSender::Response& response2) {
-                      return response1.shardId < response2.shardId;
-                  });
+        return routing_context_utils::withValidatedRoutingContext(
+            opCtx, {nss}, [&](RoutingContext& routingCtx) {
+                auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
+                    opCtx,
+                    nss,
+                    routingCtx,
+                    applyReadWriteConcern(
+                        opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
+                    ReadPreferenceSetting::get(opCtx),
+                    Shard::RetryPolicy::kIdempotent,
+                    query,
+                    CollationSpec::kSimpleSpec,
+                    boost::none /*letParameters*/,
+                    boost::none /*runtimeConstants*/);
 
-        // Set value of first shard result's "ok" field.
-        bool clusterCmdResult = true;
+                // Sort shard responses by shard id.
+                std::sort(shardResponses.begin(),
+                          shardResponses.end(),
+                          [](const AsyncRequestsSender::Response& response1,
+                             const AsyncRequestsSender::Response& response2) {
+                              return response1.shardId < response2.shardId;
+                          });
 
-        for (auto i = shardResponses.begin(); i != shardResponses.end(); ++i) {
-            const auto& response = *i;
-            auto status = response.swResponse.getStatus();
-            uassertStatusOK(status.withContext(str::stream() << "failed on: " << response.shardId));
-            const auto& cmdResult = response.swResponse.getValue().data;
+                // Set value of first shard result's "ok" field.
+                bool clusterCmdResult = true;
 
-            // XXX: In absence of sensible aggregation strategy,
-            //      promote first shard's result to top level.
-            if (i == shardResponses.begin()) {
-                CommandHelpers::filterCommandReplyForPassthrough(cmdResult, &result);
-                status = getStatusFromCommandResult(cmdResult);
-                clusterCmdResult = status.isOK();
-            }
+                for (auto i = shardResponses.begin(); i != shardResponses.end(); ++i) {
+                    const auto& response = *i;
+                    auto status = response.swResponse.getStatus();
+                    uassertStatusOK(
+                        status.withContext(str::stream() << "failed on: " << response.shardId));
+                    const auto& cmdResult = response.swResponse.getValue().data;
 
-            // Append shard result as a sub object.
-            // Name the field after the shard.
-            result.append(response.shardId, cmdResult);
-        }
+                    // XXX: In absence of sensible aggregation strategy,
+                    //      promote first shard's result to top level.
+                    if (i == shardResponses.begin()) {
+                        CommandHelpers::filterCommandReplyForPassthrough(cmdResult, &result);
+                        status = getStatusFromCommandResult(cmdResult);
+                        clusterCmdResult = status.isOK();
+                    }
 
-        return clusterCmdResult;
+                    // Append shard result as a sub object.
+                    // Name the field after the shard.
+                    result.append(response.shardId, cmdResult);
+                }
+
+                return clusterCmdResult;
+            });
     }
 
 private:

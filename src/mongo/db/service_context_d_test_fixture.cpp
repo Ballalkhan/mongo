@@ -31,12 +31,6 @@
 
 #include <type_traits>
 
-#include "mongo/db/auth/authorization_backend_interface.h"
-#include "mongo/db/auth/authorization_backend_mock.h"
-#include "mongo/db/auth/authorization_client_handle_shard.h"
-#include "mongo/db/auth/authorization_manager_impl.h"
-#include "mongo/db/auth/authorization_router_impl.h"
-#include "mongo/db/auth/authorization_router_impl_for_test.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_helper.h"
 #include "mongo/db/catalog/collection_impl.h"
@@ -52,12 +46,13 @@
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/collection_sharding_state_factory_shard.h"
+#include "mongo/db/s/database_sharding_state_factory_mock.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_entry_point_shard_role.h"
 #include "mongo/db/storage/control/storage_control.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/periodic_runner.h"
 #include "mongo/util/periodic_runner_factory.h"
@@ -180,6 +175,8 @@ MongoDScopedGlobalServiceContextForTest::MongoDScopedGlobalServiceContextForTest
     }
     CollectionShardingStateFactory::set(
         serviceContext, std::make_unique<CollectionShardingStateFactoryShard>(serviceContext));
+    DatabaseShardingStateFactory::set(serviceContext,
+                                      std::make_unique<DatabaseShardingStateFactoryMock>());
     serviceContext->getStorageEngine()->notifyStorageStartupRecoveryComplete();
 
     if (options._indexBuildsCoordinator) {
@@ -201,6 +198,7 @@ MongoDScopedGlobalServiceContextForTest::~MongoDScopedGlobalServiceContextForTes
 
     IndexBuildsCoordinator::get(opCtx.get())->shutdown(opCtx.get());
     CollectionShardingStateFactory::clear(getServiceContext());
+    DatabaseShardingStateFactory::clear(getServiceContext());
 
     {
         Lock::GlobalLock glk(opCtx.get(), MODE_X);

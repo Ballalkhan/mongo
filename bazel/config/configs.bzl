@@ -48,7 +48,7 @@ mongo_toolchain_version = rule(
 # linker
 # ==========
 
-linker_values = ["auto", "gold", "lld"]
+linker_values = ["auto", "gold", "lld", "mold"]
 
 linker_provider = provider(
     doc = "Specify the type of linker to use.",
@@ -239,20 +239,6 @@ use_glibcxx_debug_provider = provider(
 
 use_glibcxx_debug = rule(
     implementation = lambda ctx: use_glibcxx_debug_provider(enabled = ctx.build_setting_value),
-    build_setting = config.bool(flag = True),
-)
-
-# =========
-# libc++
-# =========
-
-use_libcxx_provider = provider(
-    doc = """use libc++ (experimental, requires clang)""",
-    fields = ["enabled"],
-)
-
-use_libcxx = rule(
-    implementation = lambda ctx: use_libcxx_provider(enabled = ctx.build_setting_value),
     build_setting = config.bool(flag = True),
 )
 
@@ -704,5 +690,19 @@ server_js_provider = provider(
 
 server_js = rule(
     implementation = lambda ctx: server_js_provider(enabled = ctx.build_setting_value),
+    build_setting = config.bool(flag = True),
+)
+
+# =========
+# create_dwp
+# =========
+
+create_dwp_provider = provider(
+    doc = "Create dwp files when using install targets",
+    fields = ["enabled"],
+)
+
+create_dwp = rule(
+    implementation = lambda ctx: create_dwp_provider(enabled = ctx.build_setting_value),
     build_setting = config.bool(flag = True),
 )

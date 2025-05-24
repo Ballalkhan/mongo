@@ -37,7 +37,7 @@
 #include "mongo/db/memory_tracking/memory_usage_tracker.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/spilling/spilling_stats.h"
-#include "mongo/db/storage/temporary_record_store.h"
+#include "mongo/db/storage/spill_table.h"
 
 namespace mongo {
 
@@ -70,13 +70,21 @@ public:
     bool isIdInCache(int id);
     Document getDocumentById(int id);
 
+    Document peekFront() {
+        return getDocumentById(getLowestIndex());
+    }
+
+    void popFront() {
+        freeUpTo(getLowestIndex());
+    }
+
     /**
      * Removes all documents with ids up to but not including 'id' from the cache.
      */
     void freeUpTo(int id);
 
     /**
-     *  Remove all documents from the cache and reset state while preserving the ability to perform
+     * Remove all documents from the cache and reset state while preserving the ability to perform
      * more inserts.
      */
     void clear();
@@ -105,6 +113,10 @@ public:
             return _memCache.size();
         }
         return _memCache.size() + _diskWrittenIndex - _nextFreedIndex;
+    }
+
+    bool empty() const {
+        return getNumDocs() == 0;
     }
 
     bool usedDisk() const {
@@ -147,7 +159,7 @@ private:
     ExpressionContext* _expCtx;
     std::deque<MemoryUsageTokenWith<Document>> _memCache;
 
-    std::unique_ptr<TemporaryRecordStore> _diskCache = nullptr;
+    std::unique_ptr<SpillTable> _diskCache = nullptr;
     // The number of documents we've written to disk, as well as the recordID of the last document
     // written. Zero is an invalid RecordID, so writing will start with RecordId(1).
     int _diskWrittenIndex = 0;

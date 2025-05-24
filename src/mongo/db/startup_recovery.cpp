@@ -377,11 +377,15 @@ void clearTempFilesExceptForResumableBuilds(const std::vector<ResumeIndexInfo>& 
         }
     }
 
+    size_t numFilesRemaining{0};
     auto dirItr = boost::filesystem::directory_iterator(tempDir);
     auto dirEnd = boost::filesystem::directory_iterator();
     for (; dirItr != dirEnd; ++dirItr) {
         auto curFilename = dirItr->path().filename().string();
-        if (!resumableIndexFiles.contains(curFilename)) {
+        // Skip deleting files specified by 'resumableIndexFiles' and any directories. Specifically,
+        // ensure that the StorageGlobalParams::getSpillDbPath() directory is not deleted.
+        if (!resumableIndexFiles.contains(curFilename) &&
+            !boost::filesystem::is_directory(dirItr->path())) {
             boost::system::error_code ec;
             boost::filesystem::remove(dirItr->path(), ec);
             if (ec) {
@@ -390,6 +394,16 @@ void clearTempFilesExceptForResumableBuilds(const std::vector<ResumeIndexInfo>& 
                       "filename"_attr = curFilename,
                       "error"_attr = ec.message());
             }
+        } else {
+            ++numFilesRemaining;
+        }
+    }
+
+    if (numFilesRemaining == 0) {
+        boost::system::error_code ec;
+        boost::filesystem::remove_all(tempDir, ec);
+        if (ec) {
+            LOGV2(5071101, "Failed to clear temp directory", "error"_attr = ec.message());
         }
     }
 }
@@ -576,14 +590,12 @@ void reconcileCatalogAndRestartUnfinishedIndexBuilds(
     if (reconcileResult.indexBuildsToResume.empty() ||
         lastShutdownState == StorageEngine::LastShutdownState::kUnclean) {
         // If we did not find any index builds to resume or we are starting up after an unclean
-        // shutdown, nothing in the temp directory will be used. Thus, we can clear it completely.
+        // shutdown, nothing in the temp directory will be used. Thus, we can clear it
+        // completely.
         LOGV2(5071100, "Clearing temp directory");
 
-        boost::system::error_code ec;
-        boost::filesystem::remove_all(tempDir, ec);
-
-        if (ec) {
-            LOGV2(5071101, "Failed to clear temp directory", "error"_attr = ec.message());
+        if (boost::filesystem::exists(tempDir)) {
+            clearTempFilesExceptForResumableBuilds({}, tempDir);
         }
     } else if (boost::filesystem::exists(tempDir)) {
         // Clears the contents of the temp directory except for files for resumable builds.
@@ -615,12 +627,16 @@ void reconcileCatalogAndRestartUnfinishedIndexBuilds(
  * Sets the appropriate flag on the service context decorable 'replSetMemberInStandaloneMode' to
  * 'true' if this is a replica set node running in standalone mode, otherwise 'false'.
  */
-void setReplSetMemberInStandaloneMode(OperationContext* opCtx, StartupRecoveryMode mode) {
+void setReplSetMemberInStandaloneMode(OperationContext* opCtx,
+                                      StartupRecoveryMode mode,
+                                      StorageEngine* engine) {
     if (mode == StartupRecoveryMode::kReplicaSetMember) {
         setReplSetMemberInStandaloneMode(opCtx->getServiceContext(), false);
+        engine->setInStandaloneMode(false);
         return;
     } else if (mode == StartupRecoveryMode::kReplicaSetMemberInStandalone) {
         setReplSetMemberInStandaloneMode(opCtx->getServiceContext(), true);
+        engine->setInStandaloneMode(true);
         return;
     }
 
@@ -630,6 +646,7 @@ void setReplSetMemberInStandaloneMode(OperationContext* opCtx, StartupRecoveryMo
     if (usingReplication) {
         // Not in standalone mode.
         setReplSetMemberInStandaloneMode(opCtx->getServiceContext(), false);
+        engine->setInStandaloneMode(false);
         return;
     }
 
@@ -638,10 +655,12 @@ void setReplSetMemberInStandaloneMode(OperationContext* opCtx, StartupRecoveryMo
         opCtx, NamespaceString::kSystemReplSetNamespace);
     if (collection && !collection->isEmpty(opCtx)) {
         setReplSetMemberInStandaloneMode(opCtx->getServiceContext(), true);
+        engine->setInStandaloneMode(true);
         return;
     }
 
     setReplSetMemberInStandaloneMode(opCtx->getServiceContext(), false);
+    engine->setInStandaloneMode(false);
 }
 
 // Perform startup procedures for --repair mode.
@@ -729,7 +748,7 @@ void startupRepair(OperationContext* opCtx,
         fassertNoTrace(4805001, repair::repairDatabase(opCtx, storageEngine, *it));
 
         // This must be set before rebuilding index builds on replicated collections.
-        setReplSetMemberInStandaloneMode(opCtx, StartupRecoveryMode::kAuto);
+        setReplSetMemberInStandaloneMode(opCtx, StartupRecoveryMode::kAuto, storageEngine);
         dbNames.erase(it);
     }
 
@@ -798,13 +817,18 @@ bool offlineValidateCollection(OperationContext* opCtx, NamespaceString nss) {
     } else {
         BSONObjBuilder results;
         validateResults.appendToResultObj(&results, /*debug=*/false);
-        LOGV2(9437301, "Offline validation result", "results"_attr = results.done());
+        LOGV2_OPTIONS(9437301,
+                      {logv2::LogTruncation::Disabled},
+                      "Offline validation result",
+                      "results"_attr = results.done());
     }
     return validateResults.isValid();
 }
 
 // Perform collection validation for all collections on a databases
 bool offlineValidateDb(OperationContext* opCtx, DatabaseName dbName) {
+    auto databaseHolder = DatabaseHolder::get(opCtx);
+    databaseHolder->openDb(opCtx, dbName);
     bool allResultsValid = true;
     if (!gValidateCollectionName.empty()) {
         NamespaceString userNss = NamespaceStringUtil::deserialize(dbName, gValidateCollectionName);
@@ -835,8 +859,6 @@ void offlineValidate(OperationContext* opCtx) {
 
     } else {
         for (const auto& dbName : CollectionCatalog::get(opCtx)->getAllDbNames()) {
-            auto databaseHolder = DatabaseHolder::get(opCtx);
-            databaseHolder->openDb(opCtx, dbName);
             allResultsValid &= offlineValidateDb(opCtx, dbName);
         }
     }
@@ -863,7 +885,7 @@ void startupRecovery(OperationContext* opCtx,
 
     // Determine whether this is a replica set node running in standalone mode. This must be set
     // before determining whether to restart index builds.
-    setReplSetMemberInStandaloneMode(opCtx, mode);
+    setReplSetMemberInStandaloneMode(opCtx, mode, storageEngine);
 
     // Initialize FCV before rebuilding indexes that may have features dependent on FCV.
     {

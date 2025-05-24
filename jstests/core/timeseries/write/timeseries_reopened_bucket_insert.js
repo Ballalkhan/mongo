@@ -11,7 +11,6 @@
  *   assumes_read_preference_unchanged,
  *   # This test depends on the stats tracked by UUID
  *   assumes_stable_collection_uuid,
- *   known_query_shape_computation_problem,  # TODO (SERVER-103069): Remove this tag.
  * ]
  */
 import {
@@ -129,6 +128,7 @@ const checkIfBucketReopened = function(
                 "_id": ObjectId("6700012b1561e0bf72d3880f"),
                 "time": ISODate("2024-10-04T10:14:00Z")
             },
+            "count": 1,
         },
         "meta": "ReopenedBucket2",
         "data": {"_id": BinData(7, "BwBnAAErFWHgv3LTiA8A"), "time": BinData(7, "CQBAogVXkgEAAAA=")}

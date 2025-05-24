@@ -59,7 +59,6 @@
 #include "mongo/db/timeseries/bucket_catalog/bucket_metadata.h"
 #include "mongo/db/timeseries/bucket_catalog/execution_stats.h"
 #include "mongo/db/timeseries/bucket_catalog/flat_bson.h"
-#include "mongo/db/timeseries/bucket_catalog/reopening.h"
 #include "mongo/db/timeseries/bucket_catalog/rollover.h"
 #include "mongo/db/timeseries/bucket_compression_failure.h"
 #include "mongo/db/timeseries/timeseries_constants.h"
@@ -147,31 +146,6 @@ void abortWriteBatch(WriteBatch& batch, const Status& status) {
     batch.promise.setError(status);
 }
 
-/**
- * Returns a prepared write batch matching the specified 'key' if one exists, by searching the set
- * of open buckets associated with 'key'.
- */
-std::shared_ptr<WriteBatch> findPreparedBatch(const Stripe& stripe,
-                                              WithLock stripeLock,
-                                              const BucketKey& key,
-                                              boost::optional<OID> oid) {
-    auto it = stripe.openBucketsByKey.find(key);
-    if (it == stripe.openBucketsByKey.end()) {
-        // No open bucket for this metadata.
-        return {};
-    }
-
-    auto& openSet = it->second;
-    for (Bucket* potentialBucket : openSet) {
-        if (potentialBucket->preparedBatch &&
-            (!oid.has_value() || oid.value() == potentialBucket->bucketId.oid)) {
-            return potentialBucket->preparedBatch;
-        }
-    }
-
-    return {};
-}
-
 tracking::shared_ptr<ExecutionStats> getEmptyStats() {
     static const auto kEmptyStats{std::make_shared<ExecutionStats>()};
     return kEmptyStats;
@@ -191,39 +165,6 @@ StripeNumber getStripeNumber(const BucketCatalog& catalog, const BucketId& bucke
     }
     return bucketId.keySignature % catalog.stripes.size();
 }
-
-StatusWith<std::pair<BucketKey, Date_t>> extractBucketingParameters(
-    tracking::Context& trackingContext,
-    const UUID& collectionUUID,
-    const TimeseriesOptions& options,
-    const BSONObj& doc) {
-    Date_t time;
-    BSONElement metadata;
-
-    if (!options.getMetaField().has_value()) {
-        auto swTime = extractTime(doc, options.getTimeField());
-        if (!swTime.isOK()) {
-            return swTime.getStatus();
-        }
-        time = swTime.getValue();
-    } else {
-        auto swDocTimeAndMeta =
-            extractTimeAndMeta(doc, options.getTimeField(), options.getMetaField().value());
-        if (!swDocTimeAndMeta.isOK()) {
-            return swDocTimeAndMeta.getStatus();
-        }
-        time = swDocTimeAndMeta.getValue().first;
-        metadata = swDocTimeAndMeta.getValue().second;
-    }
-
-    // Buckets are spread across independently-lockable stripes to improve parallelism. We map a
-    // bucket to a stripe by hashing the BucketKey.
-    auto key = BucketKey{collectionUUID,
-                         BucketMetadata{trackingContext, metadata, options.getMetaField()}};
-
-    return {std::make_pair(std::move(key), time)};
-}
-
 
 const Bucket* findBucket(BucketStateRegistry& registry,
                          const Stripe& stripe,
@@ -308,59 +249,6 @@ BucketStateForInsertAndCleanup isBucketStateEligibleForInsertsAndCleanup(BucketC
     }
 
     return BucketStateForInsertAndCleanup::kEligibleForInsert;
-}
-
-Bucket* useBucket(BucketCatalog& catalog,
-                  Stripe& stripe,
-                  WithLock stripeLock,
-                  InsertContext& info,
-                  const Date_t& time,
-                  const StringDataComparator* comparator) {
-    auto it = stripe.openBucketsByKey.find(info.key);
-    if (it == stripe.openBucketsByKey.end()) {
-        // No open bucket for this metadata.
-        return &allocateBucket(
-            catalog, stripe, stripeLock, info.key, info.options, time, comparator, info.stats);
-    }
-
-    absl::InlinedVector<Bucket*, 4> bucketsToCleanUp;
-    auto cleanupFn = [&]() {
-        ExecutionStatsController statsStorage;
-        for (Bucket* bucket : bucketsToCleanUp) {
-            statsStorage = getExecutionStats(catalog, bucket->bucketId.collectionUUID);
-            abort(catalog,
-                  stripe,
-                  stripeLock,
-                  *bucket,
-                  statsStorage,
-                  /*batch=*/nullptr,
-                  getTimeseriesBucketClearedError(bucket->bucketId.oid));
-        }
-    };
-    ScopeGuard cleanup{cleanupFn};
-
-    auto& openSet = it->second;
-    for (Bucket* potentialBucket : openSet) {
-        if (potentialBucket->rolloverReason == RolloverReason::kNone) {
-            auto state = materializeAndGetBucketState(catalog.bucketStateRegistry, potentialBucket);
-            if (state && !conflictsWithInsertions(state.value())) {
-                markBucketNotIdle(stripe, stripeLock, *potentialBucket);
-                return potentialBucket;
-            } else if (state) {
-                bucketsToCleanUp.push_back(potentialBucket);
-            } else {
-                // If state is missing, it was already aborted and is just waiting to be cleaned up
-                // after the prepared batch is resolved.
-                invariant(potentialBucket->preparedBatch);
-            }
-        }
-    }
-
-    cleanup.dismiss();
-    cleanupFn();
-
-    return &allocateBucket(
-        catalog, stripe, stripeLock, info.key, info.options, time, comparator, info.stats);
 }
 
 Status compressAndWriteBucket(OperationContext* opCtx,
@@ -669,78 +557,6 @@ StatusWith<std::reference_wrapper<Bucket>> loadBucketIntoCatalog(
     return *unownedBucket;
 }
 
-std::variant<std::shared_ptr<WriteBatch>, RolloverReason> insertIntoBucket(
-    BucketCatalog& catalog,
-    Stripe& stripe,
-    WithLock stripeLock,
-    const BSONObj& doc,
-    const OperationId opId,
-    InsertContext& insertContext,
-    Bucket& existingBucket,
-    const Date_t& time,
-    uint64_t storageCacheSizeBytes,
-    const StringDataComparator* comparator) {
-    Bucket::NewFieldNames newFieldNamesToBeInserted;
-    Sizes sizesToBeAdded;
-
-    bool isNewlyOpenedBucket = (existingBucket.size == 0);
-    std::reference_wrapper<Bucket> bucketToUse{existingBucket};
-    bool openedDueToMetadata = true;
-    calculateBucketFieldsAndSizeChange(catalog.trackingContexts,
-                                       bucketToUse.get(),
-                                       doc,
-                                       insertContext.options.getMetaField(),
-                                       newFieldNamesToBeInserted,
-                                       sizesToBeAdded);
-    if (!isNewlyOpenedBucket) {
-        auto reason =
-            determineRolloverReason(doc,
-                                    insertContext.options,
-                                    existingBucket,
-                                    catalog.globalExecutionStats.numActiveBuckets.loadRelaxed(),
-                                    sizesToBeAdded,
-                                    time,
-                                    storageCacheSizeBytes,
-                                    comparator,
-                                    insertContext.stats);
-        auto action = getRolloverAction(reason);
-        if (action != RolloverAction::kNone) {
-            openedDueToMetadata = false;
-            bucketToUse = rolloverAndAllocateBucket(catalog,
-                                                    stripe,
-                                                    stripeLock,
-                                                    existingBucket,
-                                                    insertContext.key,
-                                                    insertContext.options,
-                                                    reason,
-                                                    time,
-                                                    comparator,
-                                                    insertContext.stats);
-            isNewlyOpenedBucket = true;
-            // Recalculate the fields and size change for the newly opened bucket we got from
-            // rolling over our original one.
-            calculateBucketFieldsAndSizeChange(catalog.trackingContexts,
-                                               bucketToUse.get(),
-                                               doc,
-                                               insertContext.options.getMetaField(),
-                                               newFieldNamesToBeInserted,
-                                               sizesToBeAdded);
-        }
-    }
-    return addMeasurementToBatchAndBucket(catalog,
-                                          doc,
-                                          opId,
-                                          insertContext.options,
-                                          insertContext.stripeNumber,
-                                          insertContext.stats,
-                                          comparator,
-                                          newFieldNamesToBeInserted,
-                                          sizesToBeAdded,
-                                          isNewlyOpenedBucket,
-                                          openedDueToMetadata,
-                                          bucketToUse.get());
-}
-
 bool tryToInsertIntoBucketWithoutRollover(BucketCatalog& catalog,
                                           Stripe& stripe,
                                           WithLock stripeLock,
@@ -1011,36 +827,25 @@ std::vector<BSONObj> getQueryReopeningCandidate(BucketCatalog& catalog,
                                      bucketMaxSize);
 }
 
-boost::optional<InsertWaiter> checkForReopeningConflict(Stripe& stripe,
-                                                        WithLock stripeLock,
-                                                        const BucketKey& bucketKey,
-                                                        boost::optional<OID> archivedCandidate) {
-    if (auto batch = findPreparedBatch(stripe, stripeLock, bucketKey, archivedCandidate)) {
-        return InsertWaiter{batch};
+std::shared_ptr<WriteBatch> findPreparedBatch(const Stripe& stripe,
+                                              WithLock stripeLock,
+                                              const BucketKey& key,
+                                              boost::optional<OID> oid) {
+    auto it = stripe.openBucketsByKey.find(key);
+    if (it == stripe.openBucketsByKey.end()) {
+        // No open bucket for this metadata.
+        return {};
     }
 
-    if (auto it = stripe.outstandingReopeningRequests.find(bucketKey);
-        it != stripe.outstandingReopeningRequests.end()) {
-        auto& requests = it->second;
-        invariant(!requests.empty());
-
-        if (!archivedCandidate.has_value()) {
-            // We are trying to perform a query-based reopening. This conflicts with any reopening
-            // for the key.
-            return InsertWaiter{requests.front()};
-        }
-
-        // We are about to attempt an archive-based reopening. This conflicts with any query-based
-        // reopening for the key, or another archive-based reopening for this bucket.
-        for (auto&& request : requests) {
-            if (!request->oid.has_value() ||
-                (request->oid.has_value() && request->oid.value() == archivedCandidate.value())) {
-                return InsertWaiter{request};
-            }
+    auto& openSet = it->second;
+    for (Bucket* potentialBucket : openSet) {
+        if (potentialBucket->preparedBatch &&
+            (!oid.has_value() || oid.value() == potentialBucket->bucketId.oid)) {
+            return potentialBucket->preparedBatch;
         }
     }
 
-    return boost::none;
+    return {};
 }
 
 void abort(BucketCatalog& catalog,
@@ -1281,22 +1086,6 @@ Bucket& allocateBucket(BucketCatalog& catalog,
     return *bucket;
 }
 
-Bucket& rolloverAndAllocateBucket(BucketCatalog& catalog,
-                                  Stripe& stripe,
-                                  WithLock stripeLock,
-                                  Bucket& bucket,
-                                  const BucketKey& key,
-                                  const TimeseriesOptions& timeseriesOptions,
-                                  RolloverReason reason,
-                                  const Date_t& time,
-                                  const StringDataComparator* comparator,
-                                  ExecutionStatsController& stats) {
-    rollover(catalog, stripe, stripeLock, bucket, reason);
-
-    return allocateBucket(
-        catalog, stripe, stripeLock, key, timeseriesOptions, time, comparator, stats);
-}
-
 void rollover(BucketCatalog& catalog,
               Stripe& stripe,
               WithLock stripeLock,
@@ -1445,20 +1234,6 @@ tracking::shared_ptr<ExecutionStats> getCollectionExecutionStats(const BucketCat
     return nullptr;
 }
 
-std::pair<UUID, tracking::shared_ptr<ExecutionStats>> getSideBucketCatalogCollectionStats(
-    BucketCatalog& sideBucketCatalog) {
-    stdx::lock_guard catalogLock{sideBucketCatalog.mutex};
-    invariant(sideBucketCatalog.executionStats.size() == 1);
-    return *sideBucketCatalog.executionStats.begin();
-}
-
-void mergeExecutionStatsToBucketCatalog(BucketCatalog& catalog,
-                                        tracking::shared_ptr<ExecutionStats> collStats,
-                                        const UUID& collectionUUID) {
-    ExecutionStatsController stats = getOrInitializeExecutionStats(catalog, collectionUUID);
-    addCollectionExecutionCounters(stats, *collStats);
-}
-
 std::vector<tracking::shared_ptr<ExecutionStats>> releaseExecutionStatsFromBucketCatalog(
     BucketCatalog& catalog, std::span<const UUID> collectionUUIDs) {
     std::vector<tracking::shared_ptr<ExecutionStats>> out;
@@ -1562,45 +1337,6 @@ void addMeasurementToBatchAndBucket(BucketCatalog& catalog,
             bucket.schema.update(measurement, timeseriesOptions.getMetaField(), comparator);
         invariant(updateStatus == Schema::UpdateStatus::Updated);
     }
-}
-
-std::shared_ptr<WriteBatch> addMeasurementToBatchAndBucket(
-    BucketCatalog& catalog,
-    const BSONObj& measurement,
-    const OperationId opId,
-    const TimeseriesOptions& timeseriesOptions,
-    const StripeNumber& stripeNumber,
-    ExecutionStatsController& stats,
-    const StringDataComparator* comparator,
-    Bucket::NewFieldNames& newFieldNamesToBeInserted,
-    const Sizes& sizesToBeAdded,
-    bool isNewlyOpenedBucket,
-    bool openedDueToMetadata,
-    Bucket& bucket) {
-    auto batch = activeBatch(catalog.trackingContexts, bucket, opId, stripeNumber, stats);
-    batch->measurements.push_back(measurement);
-    for (auto&& field : newFieldNamesToBeInserted) {
-        batch->newFieldNamesToBeInserted[field] = field.hash();
-        bucket.uncommittedFieldNames.emplace(tracking::StringMapHashedKey{
-            getTrackingContext(catalog.trackingContexts, TrackingScope::kOpenBucketsById),
-            field.key(),
-            field.hash()});
-    }
-
-    bucket.numMeasurements++;
-    batch->sizes.uncommittedMeasurementEstimate += sizesToBeAdded.uncommittedMeasurementEstimate;
-    bucket.size +=
-        sizesToBeAdded.uncommittedVerifiedSize + sizesToBeAdded.uncommittedMeasurementEstimate;
-    if (isNewlyOpenedBucket) {
-        if (openedDueToMetadata) {
-            batch->openedDueToMetadata = true;
-        }
-        auto updateStatus =
-            bucket.schema.update(measurement, timeseriesOptions.getMetaField(), comparator);
-        invariant(updateStatus == Schema::UpdateStatus::Updated);
-    }
-
-    return batch;
 }
 
 }  // namespace mongo::timeseries::bucket_catalog::internal

@@ -30,7 +30,7 @@
 #include "mongo/db/exec/document_value/document.h"
 
 #include <absl/container/node_hash_map.h>
-#include <boost/container_hash/extensions.hpp>
+#include <boost/functional/hash.hpp>
 #include <boost/move/utility_core.hpp>
 #include <boost/none.hpp>
 #include <cstdint>
@@ -192,7 +192,7 @@ Position DocumentStorage::findFieldInCache(T requested) const {
         Position pos = _hashTab[bucket];
         while (pos.found()) {
             const ValueElement& elem = getField(pos);
-            if (elem.nameLen == reqSize && memcmp(requested.rawData(), elem._name, reqSize) == 0) {
+            if (elem.nameLen == reqSize && memcmp(requested.data(), elem._name, reqSize) == 0) {
                 return pos;
             }
 
@@ -201,7 +201,7 @@ Position DocumentStorage::findFieldInCache(T requested) const {
         }
     } else {  // linear scan
         for (auto it = iteratorCacheOnly(); !it.atEnd(); it.advance()) {
-            if (it->nameLen == reqSize && memcmp(requested.rawData(), it->_name, reqSize) == 0) {
+            if (it->nameLen == reqSize && memcmp(requested.data(), it->_name, reqSize) == 0) {
                 return it.position();
             }
         }
@@ -294,7 +294,7 @@ template Value& DocumentStorage::appendField<StringData>(StringData, ValueElemen
 template Value& DocumentStorage::appendField<HashedFieldName>(HashedFieldName, ValueElement::Kind);
 
 // Call after adding field to _fields and increasing _numFields
-template <typename T>
+template <AnyFieldNameTypeButStdString T>
 void DocumentStorage::addFieldToHashTable(T field, Position pos) {
     ValueElement& elem = getField(pos);
     elem.nextCollision = Position();
@@ -552,7 +552,7 @@ Document::Document(std::initializer_list<std::pair<StringData, ImplicitValue>> i
     *this = mutableDoc.freeze();
 }
 
-Document::Document(std::vector<std::pair<StringData, Value>> fields) {
+Document::Document(const std::vector<std::pair<StringData, Value>>& fields) {
     MutableDocument mutableDoc(fields.size());
     for (auto&& pair : fields)
         mutableDoc.addField(pair.first, pair.second);
@@ -814,7 +814,7 @@ size_t Document::memUsageForSorter() const {
 void Document::hash_combine(size_t& seed, const StringDataComparator* stringComparator) const {
     for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
         StringData name = it->nameSD();
-        boost::hash_range(seed, name.rawData(), name.rawData() + name.size());
+        boost::hash_range(seed, name.data(), name.data() + name.size());
         it->val.hash_combine(seed, stringComparator);
     }
 }

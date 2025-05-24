@@ -47,7 +47,6 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/timestamp.h"
-#include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/journal_listener.h"
@@ -66,6 +65,7 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_size_storer.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_snapshot_manager.h"
 #include "mongo/db/tenant_id.h"
+#include "mongo/platform/atomic.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
@@ -112,7 +112,7 @@ struct WiredTigerFileVersion {
     inline static const std::string kLatestWTRelease = "compatibility=(release=10.0)";
 
     StartupVersion _startupVersion;
-    bool shouldDowngrade(bool hasRecoveryTimestamp);
+    bool shouldDowngrade(bool hasRecoveryTimestamp, bool isReplSet);
     std::string getDowngradeString();
 };
 
@@ -298,12 +298,16 @@ public:
                        ClockSource* cs,
                        WiredTigerConfig wtConfig,
                        bool ephemeral,
-                       bool repair);
+                       bool repair,
+                       bool isReplSet,
+                       bool shouldRecoverFromOplogAsStandalone,
+                       bool inStandaloneMode);
 
     ~WiredTigerKVEngine() override;
 
     void notifyStorageStartupRecoveryComplete() override;
     void notifyReplStartupRecoveryComplete(RecoveryUnit&) override;
+    void setInStandaloneMode(bool inStandaloneMode) override;
 
     void setRecordStoreExtraOptions(const std::string& options);
     void setSortedDataInterfaceExtraOptions(const std::string& options);
@@ -342,14 +346,20 @@ public:
 
     Status createRecordStore(const NamespaceString& ns,
                              StringData ident,
-                             KeyFormat keyFormat = KeyFormat::Long,
-                             bool isTimeseries = false,
-                             const BSONObj& storageEngineCollectionOptions = BSONObj()) override;
+                             const RecordStore::Options& options) override {
+        // Parameters required for a standard WiredTigerRecordStore.
+        return _createRecordStore(ns,
+                                  ident,
+                                  options.keyFormat,
+                                  options.storageEngineCollectionOptions,
+                                  options.customBlockCompressor);
+    }
 
     std::unique_ptr<RecordStore> getRecordStore(OperationContext* opCtx,
                                                 const NamespaceString& nss,
                                                 StringData ident,
-                                                const CollectionOptions& options) override;
+                                                const RecordStore::Options& options,
+                                                boost::optional<UUID> uuid) override;
 
     std::unique_ptr<RecordStore> getTemporaryRecordStore(OperationContext* opCtx,
                                                          StringData ident,
@@ -437,9 +447,7 @@ public:
 
     Status recoverOrphanedIdent(const NamespaceString& nss,
                                 StringData ident,
-                                KeyFormat keyFormat = KeyFormat::Long,
-                                bool isTimeseries = false,
-                                const BSONObj& storageEngineCollectionOptions = BSONObj()) override;
+                                const RecordStore::Options& options) override;
 
     bool hasIdent(RecoveryUnit&, StringData ident) const override;
 
@@ -493,8 +501,6 @@ public:
     Timestamp getAllDurableTimestamp() const override;
 
     bool supportsReadConcernSnapshot() const final;
-
-    bool supportsOplogTruncateMarkers() const final;
 
     Status oplogDiskLocRegister(RecoveryUnit&,
                                 RecordStore* oplogRecordStore,
@@ -608,6 +614,8 @@ public:
 
     Status autoCompact(RecoveryUnit&, const AutoCompactOptions& options) override;
 
+    bool hasOngoingLiveRestore() override;
+
 private:
     StatusWith<Timestamp> _pinOldestTimestamp(WithLock,
                                               const std::string& requestingServiceName,
@@ -675,6 +683,12 @@ private:
         std::string uri;
         StorageEngine::DropIdentCallback callback;
     };
+
+    Status _createRecordStore(const NamespaceString& ns,
+                              StringData ident,
+                              KeyFormat keyFormat,
+                              const BSONObj& storageEngineCollectionOptions,
+                              boost::optional<std::string> customBlockCompressor);
 
     void _checkpoint(WiredTigerSession& session);
 
@@ -830,6 +844,11 @@ private:
     // Prevents a database's directory from being deleted concurrently with creation (necessary for
     // --directoryPerDb).
     stdx::mutex _directoryModificationMutex;
+
+    // Replication settings, passed in from constructor to avoid dependency on repl
+    bool _isReplSet;
+    bool _shouldRecoverFromOplogAsStandalone;
+    Atomic<bool> _inStandaloneMode;
 };
 
 /**
@@ -843,12 +862,12 @@ std::string generateWTOpenConfigString(const WiredTigerKVEngineBase::WiredTigerC
  * startup.
  */
 WiredTigerKVEngineBase::WiredTigerConfig getWiredTigerConfigFromStartupOptions(
-    bool usingTemporaryKVEngine = false);
+    bool usingSpillWiredTigerKVEngine = false);
 
 /**
  * Returns a WiredTigerTableConfig populated with config values provided at startup.
  */
 WiredTigerRecordStoreBase::WiredTigerTableConfig getWiredTigerTableConfigFromStartupOptions(
-    bool usingTemporaryKVEngine = false);
+    bool usingSpillWiredTigerKVEngine = false);
 
 }  // namespace mongo

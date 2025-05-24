@@ -80,7 +80,7 @@ public:
         const boost::intrusive_ptr<ExpressionContext>&);
 
     const char* getSourceName() const final {
-        return kStageName.rawData();
+        return kStageName.data();
     }
 
     Value doSerialize(const SerializationOptions& opts = SerializationOptions{}) const final;
@@ -97,6 +97,12 @@ public:
     }
 
     void addVariableRefs(std::set<Variables::Id>* refs) const final {}
+
+    static const Id& id;
+
+    Id getId() const override {
+        return id;
+    }
 
 private:
     DocumentSourceChangeStreamHandleTopologyChange(const boost::intrusive_ptr<ExpressionContext>&);

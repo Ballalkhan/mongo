@@ -65,8 +65,8 @@
 #include "mongo/db/s/range_deleter_service_test.h"
 #include "mongo/db/s/range_deletion_task_gen.h"
 #include "mongo/db/s/shard_server_test_fixture.h"
-#include "mongo/db/s/sharding_index_catalog_ddl_util.h"
 #include "mongo/db/s/sharding_mongod_test_fixture.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/shard_id.h"
 #include "mongo/db/vector_clock.h"
@@ -81,7 +81,6 @@
 #include "mongo/s/database_version.h"
 #include "mongo/s/resharding/type_collection_fields_gen.h"
 #include "mongo/s/shard_version_factory.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/type_collection_common_types_gen.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
@@ -841,19 +840,6 @@ public:
         CollectionShardingRuntimeWithRangeDeleterTest::tearDown();
     }
 };
-
-TEST_F(CollectionShardingRuntimeWithCatalogTest, TestShardingIndexesCatalogCache) {
-    OperationContext* opCtx = operationContext();
-
-    ASSERT_EQ(false, csr()->getIndexes(opCtx).is_initialized());
-
-    Timestamp indexVersion(1, 0);
-    addShardingIndexCatalogEntryToCollection(
-        opCtx, kTestNss, "x_1", BSON("x" << 1), BSONObj(), uuid(), indexVersion, boost::none);
-
-    ASSERT_EQ(true, csr()->getIndexes(opCtx).is_initialized());
-    ASSERT_EQ(CollectionIndexes(uuid(), indexVersion), *csr()->getCollectionIndexes(opCtx));
-}
 
 // Test the CSR before and after the initialization of the ShardingState with ClusterRole::None.
 TEST_F(ShardingMongoDTestFixture, ShardingStateDisabledReturnsUntrackedVersion) {

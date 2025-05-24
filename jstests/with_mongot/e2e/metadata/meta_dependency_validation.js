@@ -93,8 +93,15 @@ const FirstStageOptions = Object.freeze({
     RANK_FUSION: {$rankFusion: {input: {pipelines: {search: [searchStage]}}}},
     RANK_FUSION_W_DETAILS:
         {$rankFusion: {input: {pipelines: {search: [searchStage]}}, scoreDetails: true}},
+    SCORE_FUSION:
+        {$scoreFusion: {input: {pipelines: {search: [searchStage]}, normalization: "none"}}},
+    SCORE_FUSION_W_DETAILS: {
+        $scoreFusion:
+            {input: {pipelines: {search: [searchStage]}, normalization: "none"}, scoreDetails: true}
+    },
     SORT: {$sort: {a: -1}},
-    SCORE: {$score: {score: {$divide: [1, "$a"]}}}
+    SCORE: {$score: {score: {$divide: [1, "$a"]}}},
+    SCORE_W_DETAILS: {$score: {score: {$divide: [1, "$a"]}, scoreDetails: true}}
 });
 
 // The set of metadata fields that can be referenced inside $meta, alongside information used to
@@ -135,7 +142,9 @@ const MetaFields = Object.freeze({
             // "searchScore" metadata, but it thinks it will if one
             // of the $rankFusion input pipelines has $search.
             FirstStageOptions.RANK_FUSION,
-            FirstStageOptions.RANK_FUSION_W_DETAILS
+            FirstStageOptions.RANK_FUSION_W_DETAILS,
+            FirstStageOptions.SCORE_FUSION,
+            FirstStageOptions.SCORE_FUSION_W_DETAILS
         ]
     },
     SEARCH_HIGHLIGHTS: {
@@ -157,11 +166,14 @@ const MetaFields = Object.freeze({
             FirstStageOptions.SORT,
             FirstStageOptions.GEO_NEAR,
             FirstStageOptions.SCORE,
+            FirstStageOptions.SCORE_W_DETAILS,
             FirstStageOptions.SEARCH,
             FirstStageOptions.SEARCH_W_DETAILS,
             FirstStageOptions.RANK_FUSION,
             FirstStageOptions.RANK_FUSION_W_DETAILS,
             FirstStageOptions.VECTOR_SEARCH,
+            FirstStageOptions.SCORE_FUSION,
+            FirstStageOptions.SCORE_FUSION_W_DETAILS,
         ]
     },
     SEARCH_SCORE_DETAIS: {
@@ -203,11 +215,14 @@ const MetaFields = Object.freeze({
         firstStageRequired: [
             FirstStageOptions.FTS_MATCH,
             FirstStageOptions.SCORE,
+            FirstStageOptions.SCORE_W_DETAILS,
             FirstStageOptions.VECTOR_SEARCH,
             FirstStageOptions.SEARCH,
             FirstStageOptions.SEARCH_W_DETAILS,
             FirstStageOptions.RANK_FUSION,
             FirstStageOptions.RANK_FUSION_W_DETAILS,
+            FirstStageOptions.SCORE_FUSION,
+            FirstStageOptions.SCORE_FUSION_W_DETAILS,
         ]
     },
     SCORE_DETAILS: {
@@ -218,6 +233,8 @@ const MetaFields = Object.freeze({
         firstStageRequired: [
             FirstStageOptions.SEARCH_W_DETAILS,
             FirstStageOptions.RANK_FUSION_W_DETAILS,
+            FirstStageOptions.SCORE_W_DETAILS,
+            FirstStageOptions.SCORE_FUSION_W_DETAILS,
         ]
     }
 });
@@ -283,7 +300,9 @@ function shouldQuerySucceed(
             firstStage === FirstStageOptions.SEARCH_W_DETAILS ||
             firstStage === FirstStageOptions.VECTOR_SEARCH ||
             firstStage == FirstStageOptions.RANK_FUSION ||
-            firstStage == FirstStageOptions.RANK_FUSION_W_DETAILS) {
+            firstStage == FirstStageOptions.RANK_FUSION_W_DETAILS ||
+            firstStage == FirstStageOptions.SCORE_FUSION ||
+            firstStage == FirstStageOptions.SCORE_FUSION_W_DETAILS) {
             return true;
         }
     }

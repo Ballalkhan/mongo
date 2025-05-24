@@ -16,7 +16,7 @@ variables:
     activate: true # These compile variants run on every commit to reduce latency of the auto-reverter.
     tasks:
       - name: compile_test_parallel_core_stream_TG
-      - name: compile_test_parallel_unittest_stream_TG
+      - name: run_unit_tests_TG
       - name: compile_test_parallel_dbtest_stream_TG
       - name: generate_buildid_to_debug_symbols_mapping
 
@@ -149,7 +149,7 @@ buildvariants:
       - name: compile_test_serial_TG
         distros:
           - windows-2022-xxlarge
-      - name: compile_test_parallel_unittest_stream_TG
+      - name: run_unit_tests_no_sandbox_TG
         distros:
           - windows-2022-xxlarge
       - name: burn_in_tests_gen
@@ -170,7 +170,8 @@ buildvariants:
         distros:
           - windows-2016-dc
       - name: .jscore .common !.sharding
-      - name: .jstestfuzz .common !.feature_flag_guarded
+      # SERVER-105328: Enable this task once container support is added to Windows variants.
+      # - name: .jstestfuzz .common !.feature_flag_guarded
       - name: replica_sets_auth_gen
       - name: sasl
       - name: sharding_auth_audit_gen

@@ -32,15 +32,18 @@
 #include <boost/optional/optional.hpp>
 
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/commands/cluster_server_parameter_cmds_gen.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/pipeline/lite_parsed_pipeline.h"
+#include "mongo/db/query/query_settings/query_settings_cluster_parameter_gen.h"
 #include "mongo/db/query/query_settings/query_settings_manager.h"
+#include "mongo/db/query/query_settings/query_settings_service_dependencies.h"
 #include "mongo/db/query/query_shape/agg_cmd_shape.h"
 #include "mongo/db/query/query_shape/distinct_cmd_shape.h"
 #include "mongo/db/query/query_shape/find_cmd_shape.h"
 #include "mongo/db/query/query_utils.h"
-#include "mongo/idl/cluster_server_parameter_refresher.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/serialization_context.h"
@@ -72,7 +75,6 @@ const stdx::unordered_set<StringData, StringMapHasher> rejectionIncompatibleStag
     "$listCatalog"_sd,
     "$listLocalSessions"_sd,
     "$listSearchIndexes"_sd,
-    "$operationMetrics"_sd,
 };
 
 const auto getQuerySettingsService =
@@ -86,7 +88,7 @@ MONGO_FAIL_POINT_DEFINE(allowAllSetQuerySettings);
  * If the pipeline starts with a "system"/administrative document source to which query settings
  * should not be applied, return the relevant stage name.
  */
-boost::optional<std::string> getStageExemptedFromRejection(const std::vector<BSONObj> pipeline) {
+boost::optional<std::string> getStageExemptedFromRejection(const std::vector<BSONObj>& pipeline) {
     if (pipeline.empty()) {
         return boost::none;
     }
@@ -98,7 +100,7 @@ boost::optional<std::string> getStageExemptedFromRejection(const std::vector<BSO
 
     // Currently, all "system" queries are always the first stage in a pipeline.
     std::string firstStageName{pipeline.at(0).firstElementFieldName()};
-    return {firstStageName};
+    return {std::move(firstStageName)};
 }
 
 void failIfRejectedBySettings(const boost::intrusive_ptr<ExpressionContext>& expCtx,
@@ -387,8 +389,6 @@ void sanitizeKeyPatternIndexHints(QueryShapeConfiguration& queryShapeItem) {
 
 class QuerySettingsRouterService : public QuerySettingsService {
 public:
-    QuerySettingsRouterService() : QuerySettingsService() {}
-
     QueryShapeConfigurationsWithTimestamp getAllQueryShapeConfigurations(
         const boost::optional<TenantId>& tenantId) const final {
         return _manager.getAllQueryShapeConfigurations(tenantId);
@@ -443,8 +443,11 @@ public:
                 setQueryShapeHash(opCtx, hash);
 
                 // Return the found query settings or an empty one.
-                return _manager.getQuerySettingsForQueryShapeHash(hash, nss.tenantId())
-                    .get_value_or({});
+                auto result = _manager.getQuerySettingsForQueryShapeHash(hash, nss.tenantId());
+                if (!result.has_value()) {
+                    return QuerySettings();
+                }
+                return std::move(result->querySettings);
             } catch (const DBException& ex) {
                 LOGV2_WARNING_OPTIONS(10153400,
                                       {logv2::LogComponent::kQuery},
@@ -460,19 +463,9 @@ public:
         return settings;
     }
 
-    void refreshQueryShapeConfigurations(OperationContext* opCtx) override {
-        // QuerySettingsManager modifies a cluster-wide parameter and thus a refresh of
-        // the parameter after that modification should observe results of preceeding
-        // writes.
-        const bool kEnsureReadYourWritesConsistency = true;
-        auto refreshStatus = ClusterServerParameterRefresher::get(opCtx)->refreshParameters(
-            opCtx, kEnsureReadYourWritesConsistency);
-        if (!refreshStatus.isOK()) {
-            LOGV2_WARNING(8472500,
-                          "Error occurred when fetching the latest version of query settings",
-                          "error_code"_attr = refreshStatus.code(),
-                          "reason"_attr = refreshStatus.reason());
-        }
+    void setQuerySettingsClusterParameter(
+        OperationContext* opCtx, const QueryShapeConfigurationsWithTimestamp& config) override {
+        MONGO_UNREACHABLE_TASSERT(10397900);
     }
 
 private:
@@ -481,7 +474,8 @@ private:
 
 class QuerySettingsShardService : public QuerySettingsRouterService {
 public:
-    QuerySettingsShardService() : QuerySettingsRouterService() {}
+    explicit QuerySettingsShardService(SetClusterParameterFn setClusterParameterFn)
+        : _setClusterParameterFn(std::move(setClusterParameterFn)) {}
 
     QuerySettings lookupQuerySettingsWithRejectionCheck(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
@@ -506,9 +500,31 @@ public:
             expCtx, queryShape, nss);
     }
 
-    void refreshQueryShapeConfigurations(OperationContext* opCtx) override {
-        /* no-op */
+    void setQuerySettingsClusterParameter(
+        OperationContext* opCtx, const QueryShapeConfigurationsWithTimestamp& config) final {
+        try {
+            BSONObjBuilder bob;
+            BSONArrayBuilder arrayBuilder(
+                bob.subarrayStart(QuerySettingsClusterParameterValue::kSettingsArrayFieldName));
+            for (const auto& item : config.queryShapeConfigurations) {
+                arrayBuilder.append(item.toBSON());
+            }
+            arrayBuilder.done();
+            SetClusterParameter request(BSON(getQuerySettingsClusterParameterName() << bob.done()));
+            request.setDbName(DatabaseName::kConfig);
+
+            tassert(
+                10397800, "setClusterParameter() function must be present", _setClusterParameterFn);
+            _setClusterParameterFn(opCtx, request, boost::none, config.clusterParameterTime);
+        } catch (const ExceptionFor<ErrorCodes::BSONObjectTooLarge>&) {
+            uasserted(ErrorCodes::BSONObjectTooLarge,
+                      str::stream() << "cannot modify query settings: the total size exceeds "
+                                    << BSONObjMaxInternalSize << " bytes");
+        }
     }
+
+private:
+    SetClusterParameterFn _setClusterParameterFn;
 };
 
 QuerySettingsService& QuerySettingsService::get(ServiceContext* service) {
@@ -548,12 +564,14 @@ void initializeForRouter(ServiceContext* serviceContext) {
     getQuerySettingsService(serviceContext) = std::make_unique<QuerySettingsRouterService>();
 }
 
-void initializeForShard(ServiceContext* serviceContext) {
-    getQuerySettingsService(serviceContext) = std::make_unique<QuerySettingsShardService>();
+void initializeForShard(ServiceContext* serviceContext,
+                        SetClusterParameterFn setClusterParameterFn) {
+    getQuerySettingsService(serviceContext) =
+        std::make_unique<QuerySettingsShardService>(std::move(setClusterParameterFn));
 }
 
 void initializeForTest(ServiceContext* serviceContext) {
-    initializeForShard(serviceContext);
+    initializeForShard(serviceContext, nullptr);
 }
 
 QuerySettings lookupQuerySettingsWithRejectionCheckOnRouter(
@@ -576,15 +594,6 @@ QuerySettings lookupQuerySettingsWithRejectionCheckOnShard(
     dassert(dynamic_cast<QuerySettingsShardService*>(service));
     return service->lookupQuerySettingsWithRejectionCheck(
         expCtx, deferredShape, nss, querySettingsFromOriginalCommand);
-}
-
-QueryShapeConfigurationsWithTimestamp getAllQueryShapeConfigurations(
-    OperationContext* opCtx, const boost::optional<TenantId>& tenantId) {
-    return QuerySettingsService::get(opCtx).getAllQueryShapeConfigurations(tenantId);
-}
-
-void refreshQueryShapeConfigurations(OperationContext* opCtx) {
-    QuerySettingsService::get(opCtx).refreshQueryShapeConfigurations(opCtx);
 }
 
 std::string getQuerySettingsClusterParameterName() {
@@ -700,4 +709,24 @@ void QuerySettingsService::sanitizeQuerySettingsHints(
         return false;
     });
 }
+
+namespace {
+ServiceContext::ConstructorActionRegisterer querySettingsServiceRegisterer(
+    "QuerySettingsService",
+    {},
+    [](ServiceContext* serviceContext) {
+        invariant(serviceContext);
+        auto& dependencies = getServiceDependencies(serviceContext);
+        auto role = serverGlobalParams.clusterRole;
+        if (role.hasExclusively(ClusterRole::RouterServer)) {
+            initializeForRouter(serviceContext);
+        } else {
+            initializeForShard(serviceContext,
+                               role.has(ClusterRole::ConfigServer)
+                                   ? dependencies.setClusterParameterConfigsvr
+                                   : dependencies.setClusterParameterReplSet);
+        }
+    },
+    {});
+}  // namespace
 }  // namespace mongo::query_settings

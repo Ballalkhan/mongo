@@ -83,8 +83,7 @@ public:
             catalog->lookupCollectionByNamespace(opCtx, NamespaceString::kRsOplogNamespace);
         if (oplogCollection) {
             // In certain modes, like read-only, no truncate markers are created.
-            if (auto truncateMarkers =
-                    oplogCollection->getRecordStore()->oplog()->getCollectionTruncateMarkers()) {
+            if (auto truncateMarkers = LocalOplogInfo::get(opCtx)->getTruncateMarkers()) {
                 builder.append("totalTimeProcessingMicros",
                                truncateMarkers->getCreationProcessingTime().count());
                 builder.append("processingMethod",
@@ -137,7 +136,7 @@ bool OplogCapMaintainerThread::_deleteExcessDocuments(OperationContext* opCtx) {
 
         // Create another reference to the oplog truncate markers while holding a lock on
         // the collection to prevent it from being destructed.
-        oplogTruncateMarkers = rs->oplog()->getCollectionTruncateMarkers();
+        oplogTruncateMarkers = LocalOplogInfo::get(opCtx)->getTruncateMarkers();
         invariant(oplogTruncateMarkers);
     }
 
@@ -217,7 +216,7 @@ void OplogCapMaintainerThread::_run() {
             }
 
             opCtx->sleepFor(Seconds(1));  // Back off in case there were problems deleting.
-        } catch (const ExceptionForCat<ErrorCategory::ShutdownError>& e) {
+        } catch (const ExceptionFor<ErrorCategory::ShutdownError>& e) {
             LOGV2_DEBUG(9259900,
                         1,
                         "Interrupted due to shutdown. OplogCapMaintainerThread Exiting",

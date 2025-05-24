@@ -144,7 +144,6 @@
 #include "mongo/db/profile_filter_impl.h"
 #include "mongo/db/query/client_cursor/clientcursor.h"
 #include "mongo/db/query/query_knobs_gen.h"
-#include "mongo/db/query/query_settings/query_settings_service.h"
 #include "mongo/db/query/search/mongot_options.h"
 #include "mongo/db/query/search/search_task_executors.h"
 #include "mongo/db/query/stats/stats_cache_loader_impl.h"
@@ -175,6 +174,7 @@
 #include "mongo/db/s/collection_sharding_state_factory_shard.h"
 #include "mongo/db/s/config/configsvr_coordinator_service.h"
 #include "mongo/db/s/config_server_op_observer.h"
+#include "mongo/db/s/database_sharding_state_factory_shard.h"
 #include "mongo/db/s/ddl_lock_manager.h"
 #include "mongo/db/s/migration_blocking_operation/multi_update_coordinator.h"
 #include "mongo/db/s/migration_chunk_cloner_source_op_observer.h"
@@ -193,6 +193,7 @@
 #include "mongo/db/s/sharding_ddl_coordinator_service.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
 #include "mongo/db/s/sharding_ready.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/transaction_coordinator_service.h"
 #include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/server_lifecycle_monitor.h"
@@ -252,7 +253,6 @@
 #include "mongo/s/resource_yielders.h"
 #include "mongo/s/routing_information_cache.h"
 #include "mongo/s/service_entry_point_router_role.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/scripting/dbdirectclient_factory.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/mutex.h"
@@ -392,7 +392,7 @@ ExitCode initializeTransportLayer(ServiceContext* serviceContext, BSONObjBuilder
 void logStartup(OperationContext* opCtx) {
     BSONObjBuilder toLog;
     std::stringstream id;
-    id << getHostNameCached() << "-" << jsTime().asInt64();
+    id << getHostNameCached() << "-" << Date_t::now().asInt64();
     toLog.append("_id", id.str());
     toLog.append("hostname", getHostNameCached());
 
@@ -1495,6 +1495,8 @@ void setUpSharding(ServiceContext* service) {
     ShardingState::create(service);
     CollectionShardingStateFactory::set(
         service, std::make_unique<CollectionShardingStateFactoryShard>(service));
+    DatabaseShardingStateFactory::set(service,
+                                      std::make_unique<DatabaseShardingStateFactoryShard>());
 }
 
 namespace {
@@ -1793,7 +1795,15 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
             4784910, {LogComponent::kSharding}, "Shutting down the ShardingInitializationMongoD");
         ShardingInitializationMongoD::get(serviceContext)->shutDown(opCtx);
 
-        // Acquire the RSTL in mode X. First we enqueue the lock request, then kill all operations,
+        boost::optional<rss::consensus::ReplicationStateTransitionGuard> rstg;
+        if (gFeatureFlagIntentRegistration.isEnabled()) {
+            rstg.emplace(rss::consensus::IntentRegistry::get(serviceContext)
+                             .killConflictingOperations(
+                                 rss::consensus::IntentRegistry::InterruptionType::Shutdown)
+                             .get());
+        }
+        // Acquire the RSTL in mode X. First we enqueue the lock request, then kill all
+        // operations,
         // destroy all stashed transaction resources in order to release locks, and finally wait
         // until the lock request is granted.
         LOGV2_OPTIONS(4784911,
@@ -1844,6 +1854,7 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         // Release the rstl before waiting for the index build threads to join as index build
         // reacquires rstl in uninterruptible lock guard to finish their cleanup process.
         rstl.release();
+        rstg = boost::none;
 
         // Shuts down the thread pool and waits for index builds to finish.
         // Depends on setKillAllOperations() above to interrupt the index build operations.
@@ -1865,17 +1876,6 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         ReplicaSetMonitor::shutdown();
     }
 
-    auto sr = Grid::get(serviceContext)->isInitialized()
-        ? Grid::get(serviceContext)->shardRegistry()
-        : nullptr;
-    if (sr) {
-        SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                       TimedSectionId::shutDownShardRegistry,
-                                       &shutdownTimeElapsedBuilder);
-        LOGV2_OPTIONS(4784919, {LogComponent::kSharding}, "Shutting down the shard registry");
-        sr->shutdown();
-    }
-
     if (ShardingState::get(serviceContext)->enabled()) {
         SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
                                        TimedSectionId::shutDownTransactionCoord,
@@ -1894,25 +1894,8 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         validator->shutDown();
     }
 
-    if (TestingProctor::instance().isEnabled()) {
-        auto pool = Grid::get(serviceContext)->isInitialized()
-            ? Grid::get(serviceContext)->getExecutorPool()
-            : nullptr;
-        if (pool) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownExecutorPool,
-                                           &shutdownTimeElapsedBuilder);
-            LOGV2_OPTIONS(6773200, {LogComponent::kSharding}, "Shutting down the ExecutorPool");
-            pool->shutdownAndJoin();
-        }
-    }
-
-    if (Grid::get(serviceContext)->isShardingInitialized()) {
-        SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                       TimedSectionId::shutDownCatalogCache,
-                                       &shutdownTimeElapsedBuilder);
-        LOGV2_OPTIONS(6773201, {LogComponent::kSharding}, "Shutting down the CatalogCache");
-        Grid::get(serviceContext)->catalogCache()->shutDownAndJoin();
+    if (auto grid = Grid::get(serviceContext)) {
+        grid->shutdown(opCtx, &shutdownTimeElapsedBuilder, false /* isMongos */);
     }
 
     LOGV2_OPTIONS(9439300, {LogComponent::kSharding}, "Shutting down the filtering metadata cache");
@@ -2120,8 +2103,6 @@ int mongod_main(int argc, char* argv[]) {
     if (change_stream_serverless_helpers::canInitializeServices()) {
         ChangeStreamChangeCollectionManager::create(service);
     }
-
-    query_settings::initializeForShard(service);
 
 #if defined(_WIN32)
     if (ntservice::shouldStartService()) {

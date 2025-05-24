@@ -104,7 +104,7 @@ constexpr size_t Exchange::kMaxBufferSize;
 constexpr size_t Exchange::kMaxNumberConsumers;
 
 const char* DocumentSourceExchange::getSourceName() const {
-    return kStageName.rawData();
+    return kStageName.data();
 }
 
 Value DocumentSourceExchange::serialize(const SerializationOptions& opts) const {
@@ -356,9 +356,9 @@ DocumentSource::GetNextResult Exchange::getNext(OperationContext* opCtx,
 }
 
 size_t Exchange::loadNextBatch() {
-    auto input = _pipeline->getSources().back()->getNext();
+    auto input = _pipeline->getNextResult();
 
-    for (; input.isAdvanced(); input = _pipeline->getSources().back()->getNext()) {
+    for (; input.isAdvanced(); input = _pipeline->getNextResult()) {
         // We have a document and we will deliver it to a consumer(s) based on the policy.
         switch (_policy) {
             case ExchangePolicyEnum::kBroadcast: {

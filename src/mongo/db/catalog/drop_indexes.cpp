@@ -402,7 +402,7 @@ void dropReadyIndexes(OperationContext* opCtx,
 void assertNoMovePrimaryInProgress(OperationContext* opCtx, const NamespaceString& nss) {
     try {
         bool isMovePrimaryInProgress =
-            DatabaseShardingState::assertDbLockedAndAcquireShared(opCtx, nss.dbName())
+            DatabaseShardingState::assertDbLockedAndAcquire(opCtx, nss.dbName())
                 ->isMovePrimaryInProgress();
         auto scopedCss = CollectionShardingState::assertCollectionLockedAndAcquire(opCtx, nss);
 
@@ -602,15 +602,13 @@ DropIndexesReply dropIndexes(OperationContext* opCtx,
             auto indexCatalog = writableColl->getIndexCatalog();
             for (const auto& indexName : indexNames) {
                 auto collDesc = CollectionShardingState::assertCollectionLockedAndAcquire(
-                                    opCtx, (*collection)->ns())
+                                    opCtx, collWriter->ns())
                                     ->getCollectionDescription(opCtx);
                 if (collDesc.isSharded()) {
                     uassert(ErrorCodes::CannotDropShardKeyIndex,
                             "Cannot drop the only compatible index for this collection's shard key",
-                            !isLastNonHiddenRangedShardKeyIndex(opCtx,
-                                                                collection->getCollection(),
-                                                                indexName,
-                                                                collDesc.getKeyPattern()));
+                            !isLastNonHiddenRangedShardKeyIndex(
+                                opCtx, collWriter.get(), indexName, collDesc.getKeyPattern()));
                 }
 
                 auto writableEntry = indexCatalog->getWritableEntryByName(

@@ -5,7 +5,11 @@
  *
  * @tags: [ featureFlagMongotIndexedViews, requires_fcv_81 ]
  */
-import {createSearchIndex, dropSearchIndex} from "jstests/libs/search.js";
+import {assertArrayEq} from "jstests/aggregation/extras/utils.js";
+import {
+    createSearchIndexesAndExecuteTests,
+    validateSearchExplain,
+} from "jstests/with_mongot/e2e_lib/search_e2e_utils.js";
 
 const testDb = db.getSiblingDB(jsTestName());
 const userColl = testDb.users;
@@ -32,39 +36,92 @@ assert.commandWorked(socialMediaPostsColl.insertMany([
 ]));
 
 // Create an initial view that will be the inner collection for the subsequent $lookup view.
-let viewName = "totalSocialMediaReactions";
-let viewPipeline = [{"$addFields": {totalReactions: {$add: ["$likes", "$comments"]}}}];
+const viewName = "totalSocialMediaReactions";
+const viewPipeline = [{"$addFields": {totalReactions: {$add: ["$likes", "$comments"]}}}];
 assert.commandWorked(testDb.createView(viewName, socialMediaPostsColl.getName(), viewPipeline));
-let totalSocialMediaReactionsView = testDb[viewName];
-createSearchIndex(totalSocialMediaReactionsView,
-                  {name: "totalReactionsIndex", definition: {"mappings": {"dynamic": true}}});
+const totalSocialMediaReactionsView = testDb[viewName];
 
-// This mongot query will retrieve all documents where the content field contains the word idol.
-let searchQuery = {index: "totalReactionsIndex", text: {query: "idol", path: "content"}};
-
-/**
- * This will view returns each user and their array of posts that meet the $search criteria. More
- * specifically, each element in the socialMediaPostsAboutIdol array should contain the world 'idol'
- * in its content field and disaply a totalReaction field from the $addFields view created on the
- * socialMediaPostsColl collection. collection.
- */
-assert.commandWorked(testDb.createView("usersTotalPostsView", "users", [
+// This view will return each user and their array of posts that meet the $search criteria.
+// More specifically, each element in the socialMediaPostsAboutIdol array should contain the
+// world 'idol' in its content field and display a totalReaction field from the $addFields
+// view created on the socialMediaPostsColl collection.
+const viewDefinitionWithLookup = [
     {
         $lookup: {
             from: totalSocialMediaReactionsView.getName(),
             localField: "_id",                // Field from users collection.
             foreignField: "userId",           // Field from totalSocialMediaReactions view.
-            as: "socialMediaPostsAboutIdol",  // Name of the output array
+            as: "socialMediaPostsAboutIdol",  // Name of the output array.
             pipeline: [
-                {$search: searchQuery},
+                {$search: {index: "totalReactionsIndex", text: {query: "idol", path: "content"}}},
             ],
         }
     },
-]));
-let usersTotalPostsViewWithMetrics = testDb["usersTotalPostsView"];
-let expectedResults = [
-    {
-        "_id": 1,
+];
+assert.commandWorked(testDb.createView("usersTotalPostsView", "users", viewDefinitionWithLookup));
+const usersTotalPostsViewWithMetrics = testDb["usersTotalPostsView"];
+
+const indexConfig = {
+    coll: totalSocialMediaReactionsView,
+    definition: {name: "totalReactionsIndex", definition: {"mappings": {"dynamic": true}}}
+};
+
+const lookupAsAViewTestCases = (isStoredSource) => {
+    // ===========================================================================================
+    // Case 1: Get the entire nested view.
+    // ===========================================================================================
+    let expectedResults = [
+        {
+            "_id": 1,
+            username: "john_doe",
+            email: "john@hotmail.com",
+            socialMediaPostsAboutIdol: [{
+                _id: 100,
+                userId: 1,
+                content:
+                    "Behind these hazel eyes is someone who wants to audition for American idol",
+                likes: 6,
+                comments: 10,
+                totalReactions: 16
+            }]
+        },
+        {
+            _id: 2,
+            username: "kelly_clarkson",
+            email: "americanidol4ever@aol.com",
+            socialMediaPostsAboutIdol: [
+                {
+                    _id: 102,
+                    userId: 2,
+                    content: "I WON AMERICAN IDOL!",
+                    likes: 300,
+                    comments: 100,
+                    totalReactions: 400
+                },
+                {
+                    _id: 103,
+                    userId: 2,
+                    content: "Did you see me on American Idol?",
+                    likes: 30,
+                    comments: 10,
+                    totalReactions: 40
+                }
+            ]
+        }
+    ];
+
+    validateSearchExplain(
+        usersTotalPostsViewWithMetrics, [], isStoredSource, viewDefinitionWithLookup);
+
+    let results = usersTotalPostsViewWithMetrics.aggregate([]).toArray();
+    assertArrayEq({actual: results, expected: expectedResults});
+
+    // ===========================================================================================
+    // Case 2: Run a $match query to only view one specific user's posts containing the word "idol"
+    // with engagement metrics (totalSocialMediaReactions).
+    // ===========================================================================================
+    expectedResults = [{
+        _id: 1,
         username: "john_doe",
         email: "john@hotmail.com",
         socialMediaPostsAboutIdol: [{
@@ -75,66 +132,19 @@ let expectedResults = [
             comments: 10,
             totalReactions: 16
         }]
-    },
-    {
-        _id: 2,
-        username: "kelly_clarkson",
-        email: "americanidol4ever@aol.com",
-        socialMediaPostsAboutIdol: [
-            {
-                _id: 102,
-                userId: 2,
-                content: "I WON AMERICAN IDOL!",
-                likes: 300,
-                comments: 100,
-                totalReactions: 400
-            },
-            {
-                _id: 103,
-                userId: 2,
-                content: "Did you see me on American Idol?",
-                likes: 30,
-                comments: 10,
-                totalReactions: 40
-            }
-        ]
-    }
-];
+    }];
 
-let results = usersTotalPostsViewWithMetrics.aggregate().toArray();
-assert.sameMembers(expectedResults, results);
+    const userPipeline = [{
+        $match: {
+            username: "john_doe"  // Match a specific username.
+        }
+    }];
 
-/**
- * Run a $match query to only view one specific user's posts containing the word "idol" with
- * engagement metrics (totalSocialMediaReactions).
- */
-expectedResults = [{
-    _id: 1,
-    username: "john_doe",
-    email: "john@hotmail.com",
-    socialMediaPostsAboutIdol: [{
-        _id: 100,
-        userId: 1,
-        content: "Behind these hazel eyes is someone who wants to audition for American idol",
-        likes: 6,
-        comments: 10,
-        totalReactions: 16
-    }]
-}];
+    validateSearchExplain(
+        usersTotalPostsViewWithMetrics, userPipeline, isStoredSource, viewDefinitionWithLookup);
 
-let pipeline = [{
-    $match: {
-        username: "john_doe"  // Match a specific username
-    }
-}];
+    results = usersTotalPostsViewWithMetrics.aggregate(userPipeline).toArray();
+    assertArrayEq({actual: results, expected: expectedResults});
+};
 
-results = usersTotalPostsViewWithMetrics
-              .aggregate([{
-                  $match: {
-                      username: "john_doe"  // Match a specific username
-                  }
-              }])
-              .toArray();
-assert.sameMembers(expectedResults, results);
-
-dropSearchIndex(totalSocialMediaReactionsView, {name: "totalReactionsIndex"});
+createSearchIndexesAndExecuteTests(indexConfig, lookupAsAViewTestCases);

@@ -55,12 +55,13 @@
 #include "mongo/db/generic_argument_util.h"
 #include "mongo/db/repl/change_stream_oplog_notification.h"
 #include "mongo/db/repl/read_concern_level.h"
-#include "mongo/db/s/database_sharding_state.h"
+#include "mongo/db/s/database_sharding_runtime.h"
 #include "mongo/db/s/forwardable_operation_metadata.h"
 #include "mongo/db/s/participant_block_gen.h"
 #include "mongo/db/s/sharding_ddl_util.h"
 #include "mongo/db/s/sharding_logging.h"
 #include "mongo/db/s/sharding_recovery_service.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/shardsvr_commit_create_database_metadata_command.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/session/logical_session_id_gen.h"
@@ -80,7 +81,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/move_primary_gen.h"
 #include "mongo/s/resharding/resharding_feature_flag_gen.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/util/database_name_util.h"
 #include "mongo/util/duration.h"
 #include "mongo/util/fail_point.h"
@@ -784,14 +784,14 @@ void MovePrimaryCoordinator::cloneAuthoritativeDatabaseMetadata(OperationContext
 
 void MovePrimaryCoordinator::blockWritesLegacy(OperationContext* opCtx) const {
     AutoGetDb autoDb(opCtx, _dbName, MODE_X);
-    auto scopedDss = DatabaseShardingState::assertDbLockedAndAcquireExclusive(opCtx, _dbName);
-    scopedDss->setMovePrimaryInProgress(opCtx);
+    auto scopedDsr = DatabaseShardingRuntime::assertDbLockedAndAcquireExclusive(opCtx, _dbName);
+    scopedDsr->setMovePrimaryInProgress(opCtx);
 }
 
 void MovePrimaryCoordinator::unblockWritesLegacy(OperationContext* opCtx) const {
     AutoGetDb autoDb(opCtx, _dbName, MODE_IX);
-    auto scopedDss = DatabaseShardingState::assertDbLockedAndAcquireExclusive(opCtx, _dbName);
-    scopedDss->unsetMovePrimaryInProgress(opCtx);
+    auto scopedDsr = DatabaseShardingRuntime::assertDbLockedAndAcquireExclusive(opCtx, _dbName);
+    scopedDsr->unsetMovePrimaryInProgress(opCtx);
 }
 
 void MovePrimaryCoordinator::blockWrites(OperationContext* opCtx) const {

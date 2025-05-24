@@ -181,6 +181,7 @@ void HashAggBaseStage<Derived>::spill() {
                     "All in memory data has been consumed. HashAgg stage has nothing to spill. "
                     "Clearing memory.");
         _ht->clear();
+        _htIt = _ht->end();
         return;
     }
 
@@ -207,7 +208,7 @@ void HashAggBaseStage<Derived>::spill() {
     }
 
     _ht->clear();
-
+    _htIt = _ht->end();
 
     auto storageSizeBeforeSpillUpdate =
         static_cast<Derived*>(this)->getHashAggStats()->spillingStats.getSpilledDataStorageSize();
@@ -228,6 +229,43 @@ void HashAggBaseStage<Derived>::spill(MemoryCheckData& mcd) {
     // Since we flush the entire hash table to disk, we also clear any state related to estimating
     // memory consumption.
     mcd.reset();
+}
+
+template <class Derived>
+void HashAggBaseStage<Derived>::doForceSpill() {
+    // The state has already finished (_ht is set in open and unset in close)
+    if (!_ht) {
+        LOGV2_DEBUG(9915601, 2, "HashAggStage has finished its execution");
+        return;
+    }
+
+    // If we've already spilled, then there is nothing else to do.
+    if (_recordStore) {
+        return;
+    }
+
+    // Check before advancing _htIt.
+    uassert(ErrorCodes::QueryExceededMemoryLimitNoDiskUseAllowed,
+            "$group Received a spilling request, but didn't allow external spilling;"
+            " pass allowDiskUse:true to opt in",
+            _allowDiskUse);
+
+    static_assert(
+        std::is_member_function_pointer_v<decltype(&Derived::setIteratorToNextRecord)>,
+        "A class derived from HashAggBaseStage must implement 'setIteratorToNextRecord' method");
+
+    derived().setIteratorToNextRecord();
+
+    spill();
+
+    if (_recordStore) {
+        static_assert(std::is_member_function_pointer_v<decltype(&Derived::switchToDisk)>,
+                      "A class derived from HashAggBaseStage must implement 'switchToDisk' method");
+
+        derived().switchToDisk();
+    }
+
+    doSaveState();
 }
 
 // Checks memory usage. Ideally, we'd want to know the exact size of already accumulated data, but

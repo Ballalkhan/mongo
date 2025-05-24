@@ -55,7 +55,6 @@
 #include "mongo/db/catalog/local_oplog_info.h"
 #include "mongo/db/collection_crud/capped_collection_maintenance.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/concurrency/lock_manager_defs.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/write_stage_common.h"
@@ -69,6 +68,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/damage_vector.h"
 #include "mongo/db/storage/duplicate_key_error_info.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/index_entry_comparison.h"
 #include "mongo/db/storage/key_format.h"
 #include "mongo/db/storage/record_data.h"
@@ -704,6 +704,12 @@ void updateDocument(OperationContext* opCtx,
         invariant(!(args->retryableWrite && setNeedsRetryImageOplogField));
     }
 
+    if (collection->ns().isOplog()) {
+        uassert(ErrorCodes::IllegalOperation,
+                "Cannot change the size of a document in the oplog",
+                !LocalOplogInfo::get(opCtx)->getTruncateMarkers() ||
+                    oldDoc.value().objsize() == newDoc.objsize());
+    }
     uassertStatusOK(collection->getRecordStore()->updateRecord(
         opCtx, oldLocation, newDoc.objdata(), newDoc.objsize()));
 

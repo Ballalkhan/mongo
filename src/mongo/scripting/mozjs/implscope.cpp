@@ -94,6 +94,7 @@ namespace mongo {
 namespace JSFiles {
 extern const JSFile types;
 extern const JSFile assert;
+extern const JSFile assert_global;
 }  // namespace JSFiles
 
 namespace mozjs {
@@ -588,6 +589,7 @@ MozJSImplScope::MozJSImplScope(MozJSScriptEngine* engine, boost::optional<int> j
         JS_FireOnNewGlobalObject(_context, _global);
 
         execSetup(JSFiles::assert);
+        execSetup(JSFiles::assert_global);
         execSetup(JSFiles::types);
 
         if (_engine->executionEnvironment() == ExecutionEnvironment::Server) {
@@ -1039,7 +1041,7 @@ bool MozJSImplScope::exec(StringData code,
 
         JS::SourceText<mozilla::Utf8Unit> srcBuf;
         bool success =
-            srcBuf.init(_context, code.rawData(), code.size(), JS::SourceOwnership::Borrowed);
+            srcBuf.init(_context, code.data(), code.size(), JS::SourceOwnership::Borrowed);
         if (_checkErrorState(success, reportError, assertOnError)) {
             return false;
         }

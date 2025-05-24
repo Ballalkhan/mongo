@@ -53,7 +53,6 @@
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/direct_connection_util.h"
@@ -67,6 +66,7 @@
 #include "mongo/db/s/sharding_runtime_d_params_gen.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/capped_snapshots.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
@@ -87,6 +87,8 @@
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 namespace mongo {
+
+MONGO_FAIL_POINT_DEFINE(hangShardRoleAfterEstablishCappedSnapshot);
 
 using TransactionResources = shard_role_details::TransactionResources;
 
@@ -294,8 +296,8 @@ void checkPlacementVersion(OperationContext* opCtx,
                            const PlacementConcern& placementConcern) {
     const auto& receivedDbVersion = placementConcern.getDbVersion();
     if (receivedDbVersion) {
-        const auto scopedDss = DatabaseShardingState::acquireShared(opCtx, nss.dbName());
-        scopedDss->assertMatchingDbVersion(opCtx, *receivedDbVersion);
+        const auto scopedDss = DatabaseShardingState::acquire(opCtx, nss.dbName());
+        scopedDss->checkDbVersionOrThrow(opCtx, *receivedDbVersion);
     }
 
     const auto& receivedShardVersion = placementConcern.getShardVersion();
@@ -642,14 +644,43 @@ void checkShardingPlacement(OperationContext* opCtx,
     }
 }
 
+void checkReadSourceCompatible(
+    OperationContext* opCtx,
+    const ResolvedNamespaceOrViewAcquisitionRequests& acquisitionRequests) {
+    for (auto& ar : acquisitionRequests) {
+        auto& prerequisites = ar.prerequisites;
+        if (SnapshotHelper::wouldChangeReadSourceToLastApplied(opCtx, prerequisites.nss)) {
+            // TODO (SERVER-103165): enable assertions outside of testing environment once we are
+            // confident there are no instances of this behavior.
+            if (TestingProctor::instance().isEnabled()) {
+                tasserted(10141601,
+                          "Cannot change the read source after another acquisition has already "
+                          "potentially used the existing snapshot");
+            } else {
+                LOGV2_WARNING(10141602,
+                              "Changing the read source after another acquisition has already "
+                              "potentially used the existing snapshot",
+                              "nss"_attr = prerequisites.nss);
+            }
+        }
+    }
+}
+
 ResolvedNamespaceOrViewAcquisitionRequest::LockFreeReadsResources takeGlobalLock(
     OperationContext* opCtx, const CollectionOrViewAcquisitionRequests& acquisitionRequests) {
+    invariant(!acquisitionRequests.empty());
+
+    const auto deadline =
+        std::min_element(acquisitionRequests.begin(),
+                         acquisitionRequests.end(),
+                         [](const auto& lhs, const auto& rhs) {
+                             return lhs.lockAcquisitionDeadline < rhs.lockAcquisitionDeadline;
+                         })
+            ->lockAcquisitionDeadline;
+
     auto lockFreeReadsBlock = std::make_shared<LockFreeReadsBlock>(opCtx);
-    auto globalLock = std::make_shared<Lock::GlobalLock>(opCtx,
-                                                         MODE_IS,
-                                                         Date_t::max(),
-                                                         Lock::InterruptBehavior::kThrow,
-                                                         kLockFreeReadsGlobalLockOptions);
+    auto globalLock = std::make_shared<Lock::GlobalLock>(
+        opCtx, MODE_IS, deadline, Lock::InterruptBehavior::kThrow, kLockFreeReadsGlobalLockOptions);
     return {lockFreeReadsBlock, globalLock};
 }
 
@@ -712,7 +743,6 @@ logv2::DynamicAttributes getCurOpLogAttrs(OperationContext* opCtx) {
     logv2::DynamicAttributes attr;
     const auto curop = CurOp::get(opCtx);
     curop->debug().report(opCtx,
-                          nullptr,
                           nullptr,
                           curop->getOperationStorageMetrics(),
                           curop->getPrepareReadConflicts(),
@@ -1120,6 +1150,7 @@ void SnapshotAttempt::openStorageSnapshot() {
     for (auto& nssOrUUID : _acquisitionRequests) {
         establishCappedSnapshotIfNeeded(_opCtx, *_catalogBeforeSnapshot, nssOrUUID);
     }
+    hangShardRoleAfterEstablishCappedSnapshot.pauseWhileSet(_opCtx);
 
     if (!shard_role_details::getRecoveryUnit(_opCtx)->isActive()) {
         shard_role_details::getRecoveryUnit(_opCtx)->preallocateSnapshot();
@@ -1243,6 +1274,12 @@ CollectionOrViewAcquisitions acquireCollectionsOrViewsLockFree(
 
         auto sortedAcquisitionRequests = shard_role_details::generateSortedAcquisitionRequests(
             opCtx, *catalog, acquisitionRequests, lockFreeReadsResources);
+
+        // Make sure that we won't change the read source after already acquiring a snapshot.
+        if (!openSnapshot) {
+            checkReadSourceCompatible(opCtx, sortedAcquisitionRequests);
+        }
+
         return acquireResolvedCollectionsOrViewsWithoutTakingLocks(
             opCtx, *catalog, sortedAcquisitionRequests);
     } catch (...) {
@@ -2065,6 +2102,18 @@ void shard_role_details::checkShardingAndLocalCatalogCollectionUUIDMatch(
                         "local uuid"_attr = localUuidString);
         }
     }
+}
+
+NamespaceString shard_role_nocheck::resolveNssWithoutAcquisition(OperationContext* opCtx,
+                                                                 const DatabaseName& dbName,
+                                                                 const UUID& uuid) {
+    return CollectionCatalog::get(opCtx)->resolveNamespaceStringFromDBNameAndUUID(
+        opCtx, dbName, uuid);
+}
+
+boost::optional<NamespaceString> shard_role_nocheck::lookupNssWithoutAcquisition(
+    OperationContext* opCtx, const UUID& uuid) {
+    return CollectionCatalog::get(opCtx)->lookupNSSByUUID(opCtx, uuid);
 }
 
 }  // namespace mongo

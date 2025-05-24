@@ -35,18 +35,48 @@
 
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/basic_types.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/feature_compatibility_version_documentation.h"
+#include "mongo/db/feature_flag.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/process_interface/stub_mongo_process_interface.h"
 #include "mongo/db/query/query_utils.h"
 #include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/version_context.h"
 
 namespace mongo {
 
-ExpressionContextBuilder& ExpressionContextBuilder::opCtx(OperationContext* optCtx) {
-    params.opCtx = optCtx;
+ExpressionContextBuilder& ExpressionContextBuilder::opCtx(OperationContext* opCtx) {
+    params.opCtx = opCtx;
+
+    VersionContext vCtx = VersionContext::getDecoration(opCtx);
+    if (vCtx.isInitialized()) {
+        params.vCtx = vCtx;
+    } else if (auto fcvSnapshot = serverGlobalParams.featureCompatibility.acquireFCVSnapshot();
+               fcvSnapshot.isVersionInitialized()) {
+        params.vCtx.setOperationFCV(fcvSnapshot);
+    } else {
+        // Leave 'vCtx' in its uninitialized state.
+    }
+
+    return *this;
+}
+
+ExpressionContextBuilder& ExpressionContextBuilder::opCtx(OperationContext* opCtx,
+                                                          VersionContext vCtx) {
+    params.opCtx = opCtx;
+    params.vCtx = vCtx;
+
+    return *this;
+}
+
+ExpressionContextBuilder& ExpressionContextBuilder::ifrContext(
+    const IncrementalFeatureRolloutContext& ifrContext) {
+    params.ifrContext = ifrContext;
+
     return *this;
 }
 
@@ -212,6 +242,12 @@ ExpressionContextBuilder& ExpressionContextBuilder::allowGenericForeignDbLookup(
     return *this;
 }
 
+ExpressionContextBuilder& ExpressionContextBuilder::requiresTimeseriesExtendedRangeSupport(
+    bool requiresTimeseriesExtendedRangeSupport) {
+    params.requiresTimeseriesExtendedRangeSupport = requiresTimeseriesExtendedRangeSupport;
+    return *this;
+}
+
 ExpressionContextBuilder& ExpressionContextBuilder::collUUID(boost::optional<UUID> collUUID) {
     params.collUUID = std::move(collUUID);
     return *this;
@@ -340,12 +376,6 @@ ExpressionContextBuilder& ExpressionContextBuilder::withReplicationResolvedNames
                                                               std::vector<BSONObj>()};
 
     resolvedNamespace(std::move(resolvedNamespaces));
-    return *this;
-}
-
-ExpressionContextBuilder& ExpressionContextBuilder::maxFeatureCompatibilityVersion(
-    boost::optional<multiversion::FeatureCompatibilityVersion> maxFeatureCompatibilityVersion) {
-    params.maxFeatureCompatibilityVersion = std::move(maxFeatureCompatibilityVersion);
     return *this;
 }
 
@@ -531,7 +561,7 @@ boost::intrusive_ptr<ExpressionContext> ExpressionContext::makeBlankExpressionCo
     return ExpressionContextBuilder{}
         .opCtx(opCtx)
         .ns(nss)
-        .letParameters(shapifiedLet)
+        .letParameters(std::move(shapifiedLet))
         .blankExpressionContext(true)
         .build();
 }
@@ -555,7 +585,8 @@ std::unique_ptr<ExpressionContext::CollatorStash> ExpressionContext::temporarily
 boost::intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(
     NamespaceString ns,
     boost::optional<UUID> uuid,
-    boost::optional<std::unique_ptr<CollatorInterface>> updatedCollator) const {
+    boost::optional<std::unique_ptr<CollatorInterface>> updatedCollator,
+    boost::optional<std::pair<NamespaceString, std::vector<BSONObj>>> view) const {
     auto collator = [&]() {
         if (updatedCollator) {
             return std::move(*updatedCollator);
@@ -569,35 +600,38 @@ boost::intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(
     // Some of the properties of expression context are not cloned (e.g runtimeConstants,
     // letParameters, view). In case new fields need to be cloned, they will need to be added in the
     // builder and the proper setter called here.
-    auto expCtx = ExpressionContextBuilder()
-                      .opCtx(_params.opCtx)
-                      .collator(std::move(collator))
-                      .mongoProcessInterface(_params.mongoProcessInterface)
-                      .ns(ns)
-                      .resolvedNamespace(_params.resolvedNamespaces)
-                      .mayDbProfile(_params.mayDbProfile)
-                      .fromRouter(_params.fromRouter)
-                      .needsMerge(_params.needsMerge)
-                      .forPerShardCursor(_params.forPerShardCursor)
-                      .allowDiskUse(_params.allowDiskUse)
-                      .bypassDocumentValidation(_params.bypassDocumentValidation)
-                      .collUUID(uuid)
-                      .explain(_params.explain)
-                      .inRouter(_params.inRouter)
-                      .tmpDir(_params.tmpDir)
-                      .serializationContext(_params.serializationContext)
-                      .inLookup(_params.inLookup)
-                      .isParsingViewDefinition(_params.isParsingViewDefinition)
-                      .exprUnstableForApiV1(_params.exprUnstableForApiV1)
-                      .exprDeprecatedForApiV1(_params.exprDeprecatedForApiV1)
-                      .jsHeapLimitMB(_params.jsHeapLimitMB)
-                      .changeStreamTokenVersion(_params.changeStreamTokenVersion)
-                      .changeStreamSpec(_params.changeStreamSpec)
-                      .originalAggregateCommand(_params.originalAggregateCommand)
-                      .maxFeatureCompatibilityVersion(_params.maxFeatureCompatibilityVersion)
-                      .subPipelineDepth(_params.subPipelineDepth)
-                      .initialPostBatchResumeToken(_params.initialPostBatchResumeToken.getOwned())
-                      .build();
+    auto expCtx =
+        ExpressionContextBuilder()
+            .opCtx(_params.opCtx, _params.vCtx)
+            .ifrContext(_params.ifrContext)
+            .collator(std::move(collator))
+            .mongoProcessInterface(_params.mongoProcessInterface)
+            .ns(std::move(ns))
+            .resolvedNamespace(_params.resolvedNamespaces)
+            .mayDbProfile(_params.mayDbProfile)
+            .fromRouter(_params.fromRouter)
+            .needsMerge(_params.needsMerge)
+            .forPerShardCursor(_params.forPerShardCursor)
+            .allowDiskUse(_params.allowDiskUse)
+            .bypassDocumentValidation(_params.bypassDocumentValidation)
+            .collUUID(uuid)
+            .explain(_params.explain)
+            .inRouter(_params.inRouter)
+            .tmpDir(_params.tmpDir)
+            .serializationContext(_params.serializationContext)
+            .inLookup(_params.inLookup)
+            .isParsingViewDefinition(_params.isParsingViewDefinition)
+            .exprUnstableForApiV1(_params.exprUnstableForApiV1)
+            .exprDeprecatedForApiV1(_params.exprDeprecatedForApiV1)
+            .jsHeapLimitMB(_params.jsHeapLimitMB)
+            .changeStreamTokenVersion(_params.changeStreamTokenVersion)
+            .changeStreamSpec(_params.changeStreamSpec)
+            .originalAggregateCommand(_params.originalAggregateCommand)
+            .subPipelineDepth(_params.subPipelineDepth)
+            .initialPostBatchResumeToken(_params.initialPostBatchResumeToken.getOwned())
+            .view(view)
+            .requiresTimeseriesExtendedRangeSupport(_params.requiresTimeseriesExtendedRangeSupport)
+            .build();
 
     if (_collator.getIgnore()) {
         expCtx->setIgnoreCollator();
@@ -663,6 +697,16 @@ void ExpressionContext::initializeReferencedSystemVariables() {
     }
     if (_systemVarsReferencedInQuery.contains(Variables::kClusterTimeId) &&
         !variables.hasValue(Variables::kClusterTimeId)) {
+        // TODO: SERVER-104560: Create utility functions that return the current server topology.
+        // Replace the code checking for standalone mode with a call to the utility provided by
+        // SERVER-104560.
+        auto* repl = repl::ReplicationCoordinator::get(getOperationContext());
+        if (repl && !repl->getSettings().isReplSet() &&
+            serverGlobalParams.clusterRole.has(ClusterRole::None)) {
+            uasserted(10071200,
+                      str::stream() << "system variable $$CLUSTER_TIME"
+                                    << " is not available in standalone mode");
+        }
         variables.defineClusterTime(getOperationContext());
     }
     if (_systemVarsReferencedInQuery.contains(Variables::kUserRolesId) &&
@@ -671,38 +715,23 @@ void ExpressionContext::initializeReferencedSystemVariables() {
     }
 }
 
-void ExpressionContext::throwIfFeatureFlagIsNotEnabledOnFCV(StringData name,
-                                                            CheckableFeatureFlagRef flag) {
-    uassert(ErrorCodes::QueryFeatureNotAllowed,
-            // We would like to include the current version and the required minimum version in this
-            // error message, but using FeatureCompatibilityVersion::toString() would introduce a
-            // dependency cycle (see SERVER-31968).
-            str::stream() << name
-                          << " is not allowed in the current feature compatibility version. See "
-                          << feature_compatibility_version_documentation::compatibilityLink()
-                          << " for more information.",
-            flag.isEnabled([&](auto& fcvGatedFlag) {
-                invariant(getOperationContext());
+void ExpressionContext::throwIfParserShouldRejectFeature(StringData name, FeatureFlag& flag) {
+    // (Generic FCV reference): Fall back to kLastLTS when 'vCtx' is not initialized.
+    uassert(
+        ErrorCodes::QueryFeatureNotAllowed,
+        str::stream() << name
+                      << " is not allowed in the current feature compatibility version. See "
+                      << feature_compatibility_version_documentation::compatibilityLink()
+                      << " for more information.",
+        flag.checkWithContext(_params.vCtx,
+                              _params.ifrContext,
+                              ServerGlobalParams::FCVSnapshot{multiversion::GenericFCV::kLastLTS}));
+}
 
-                // maxFeatureCompatibilityVersion is set when parsing collection options that can
-                // contain query operations and which are persisted in the catalog: validators and
-                // view pipelines. When it is set, features are checked against that single FCV,
-                // instead of the server's FCV, which is not guaranteed to be stable across checks.
-                // If the operation has a VersionContext / Operation FCV, it will take precedence
-                // over the maxFeatureCompatibilityVersion in feature flag checks. This is correct,
-                // because Operation FCV provides feature flag stability for the entire operation,
-                // and therefore is is a superset of maxFeatureCompatibilityVersion, which only
-                // provides FCV stability for the feature flag checks of a single ExpressionContext.
-                if (_params.maxFeatureCompatibilityVersion) {
-                    return fcvGatedFlag.isEnabled(
-                        VersionContext::getDecoration(getOperationContext()),
-                        ServerGlobalParams::FCVSnapshot{*_params.maxFeatureCompatibilityVersion});
-                }
-
-                return fcvGatedFlag.isEnabledUseLastLTSFCVWhenUninitialized(
-                    VersionContext::getDecoration(getOperationContext()),
-                    serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
-            }));
+void ExpressionContext::ignoreFeatureInParserOrRejectAndThrow(StringData name, FeatureFlag& flag) {
+    if (!shouldParserIgnoreFeatureFlagCheck()) {
+        throwIfParserShouldRejectFeature(name, flag);
+    }
 }
 
 }  // namespace mongo

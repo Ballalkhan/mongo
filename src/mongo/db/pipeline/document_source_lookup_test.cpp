@@ -69,11 +69,11 @@
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/storage_interface_mock.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/tenant_id.h"
 #include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/str.h"
 #include "mongo/util/string_map.h"
@@ -494,7 +494,7 @@ TEST_F(DocumentSourceLookUpTest, ShouldBeAbleToReParseSerializedStageWithUnwind)
 
     auto sourceContainers = pipeline->getSources();
     ASSERT_EQ(sourceContainers.size(), 1);
-    auto iter = sourceContainers.begin();
+    auto iter = sourceContainers.cbegin();
     ASSERT(typeid(DocumentSourceLookUp) == typeid(**iter));
 
     auto lookup = boost::dynamic_pointer_cast<DocumentSourceLookUp>((*iter));
@@ -562,7 +562,7 @@ TEST_F(DocumentSourceLookUpTest, ShouldBeAbleToReParseSerializedStageWithUnwindA
 
     auto sourceContainers = pipeline->getSources();
     ASSERT_EQ(sourceContainers.size(), 1);
-    auto iter = sourceContainers.begin();
+    auto iter = sourceContainers.cbegin();
     ASSERT(typeid(DocumentSourceLookUp) == typeid(**iter));
 
     auto lookup = boost::dynamic_pointer_cast<DocumentSourceLookUp>((*iter));
@@ -635,7 +635,7 @@ TEST_F(DocumentSourceLookUpTest, ShouldBeAbleToReParseSerializedStageWithUnwindA
 
     auto sourceContainers = pipeline->getSources();
     ASSERT_EQ(sourceContainers.size(), 1);
-    auto iter = sourceContainers.begin();
+    auto iter = sourceContainers.cbegin();
     ASSERT(typeid(DocumentSourceLookUp) == typeid(**iter));
 
     auto lookup = boost::dynamic_pointer_cast<DocumentSourceLookUp>((*iter));
@@ -908,7 +908,7 @@ TEST_F(DocumentSourceLookUpTest, LookupReParseSerializedStageWithSearchPipelineS
     // needs to be updated to include the desugared $search for sharded queries to work properly.
     ASSERT_EQ(serializedStage["pipeline"][0].getType(), BSONType::Object);
     ASSERT_EQ(serializedStage["pipeline"][0]["$search"].getType(), BSONType::Object);
-    ASSERT_DOCUMENT_EQ(serializedStage["pipeline"][0]["$search"].getDocument(),
+    ASSERT_DOCUMENT_EQ(serializedStage["pipeline"][0]["$search"]["mongotQuery"].getDocument(),
                        Document(fromjson("{term: 'asdf'}")));
 
     auto roundTripped =
@@ -1129,7 +1129,7 @@ public:
         std::unique_ptr<Pipeline, PipelineDeleter> pipeline(
             ownedPipeline, PipelineDeleter(ownedPipeline->getContext()->getOperationContext()));
 
-        while (_removeLeadingQueryStages && !pipeline->getSources().empty()) {
+        while (_removeLeadingQueryStages && !pipeline->empty()) {
             if (pipeline->popFrontWithName("$match") || pipeline->popFrontWithName("$sort") ||
                 pipeline->popFrontWithName("$project")) {
                 continue;
@@ -1406,11 +1406,11 @@ TEST_F(DocumentSourceLookUpTest, ExprEmbeddedInMatchExpressionShouldBeOptimized)
     auto subPipeline = lookupStage->getSubPipeline_forTest(DOC("_id" << 5));
     ASSERT(subPipeline);
 
-    auto sources = subPipeline->getSources();
+    const auto& sources = subPipeline->getSources();
     ASSERT_GTE(sources.size(), 2u);
 
     // The first source is our mock data source, and the second should be the $match expression.
-    auto secondSource = *(++sources.begin());
+    auto secondSource = *(++sources.cbegin());
     auto& matchSource = dynamic_cast<const DocumentSourceMatch&>(*secondSource);
 
     // Ensure that the '$$var' in the embedded expression got optimized to ExpressionConstant.

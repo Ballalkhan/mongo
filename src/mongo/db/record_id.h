@@ -30,7 +30,6 @@
 #pragma once
 
 #include <array>
-#include <boost/container_hash/extensions.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/optional.hpp>
 #include <climits>
@@ -196,11 +195,11 @@ public:
                 return onLong(_getLongNoCheck());
             case Format::kSmallStr: {
                 auto str = _getSmallStrNoCheck();
-                return onStr(str.rawData(), str.size());
+                return onStr(str.data(), str.size());
             }
             case Format::kBigStr: {
                 auto str = _getBigStrNoCheck();
-                return onStr(str.rawData(), str.size());
+                return onStr(str.data(), str.size());
             }
             default:
                 MONGO_UNREACHABLE;
@@ -364,12 +363,12 @@ public:
             case Format::kSmallStr: {
                 StringData str = _getSmallStrNoCheck();
                 return "kSmallStr size: " + std::to_string(str.size()) + " string: '" +
-                    std::string(str.rawData()) + "'";
+                    std::string(str.data()) + "'";
             }
             case Format::kBigStr: {
                 StringData str = _getBigStrNoCheck();
                 return "kBigStr size: " + std::to_string(str.size()) + " string: '" +
-                    std::string(str.rawData()) + "'";
+                    std::string(str.data()) + "'";
             }
             default:
                 MONGO_UNREACHABLE;

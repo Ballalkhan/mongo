@@ -45,11 +45,6 @@ public:
         return {NamespaceFilter::kAll, NamespaceFilter::kAll};
     }
 
-    void onModifyCollectionShardingIndexCatalog(OperationContext* opCtx,
-                                                const NamespaceString& nss,
-                                                const UUID& uuid,
-                                                BSONObj indexDoc) override {}
-
     void onCreateIndex(OperationContext* opCtx,
                        const NamespaceString& nss,
                        const UUID& uuid,
@@ -241,6 +236,12 @@ public:
     void onCreateDatabaseMetadata(OperationContext* opCtx, const repl::OplogEntry& op) override {}
 
     void onDropDatabaseMetadata(OperationContext* opCtx, const repl::OplogEntry& op) override {}
+
+    void onBeginPromotionToShardedCluster(OperationContext* opCtx,
+                                          const repl::OplogEntry& op) override {}
+
+    void onCompletePromotionToShardedCluster(OperationContext* opCtx,
+                                             const repl::OplogEntry& op) override {}
 };
 
 }  // namespace mongo

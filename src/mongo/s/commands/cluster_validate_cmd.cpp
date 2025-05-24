@@ -54,10 +54,9 @@
 #include "mongo/executor/remote_command_response.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/cluster_commands_helpers.h"
-#include "mongo/s/grid.h"
+#include "mongo/s/router_role.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
 
@@ -105,73 +104,74 @@ public:
              BSONObjBuilder& output) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
 
-        const auto cri =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-        auto results = scatterGatherVersionedTargetByRoutingTable(
-            opCtx,
-            nss,
-            cri,
-            applyReadWriteConcern(
-                opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kIdempotent,
-            {} /*query*/,
-            {} /*collation*/,
-            boost::none /*letParameters*/,
-            boost::none /*runtimeConstants*/);
+        return routing_context_utils::withValidatedRoutingContext(
+            opCtx, {nss}, [&](RoutingContext& routingCtx) {
+                auto results = scatterGatherVersionedTargetByRoutingTable(
+                    opCtx,
+                    nss,
+                    routingCtx,
+                    applyReadWriteConcern(
+                        opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
+                    ReadPreferenceSetting::get(opCtx),
+                    Shard::RetryPolicy::kIdempotent,
+                    {} /*query*/,
+                    {} /*collation*/,
+                    boost::none /*letParameters*/,
+                    boost::none /*runtimeConstants*/);
 
-        Status firstFailedShardStatus = Status::OK();
-        bool isValid = true;
-        BSONObjBuilder rawResBuilder;
+                Status firstFailedShardStatus = Status::OK();
+                bool isValid = true;
+                BSONObjBuilder rawResBuilder;
 
-        for (const auto& cmdResult : results) {
-            const auto& shardId = cmdResult.shardId;
+                for (const auto& cmdResult : results) {
+                    const auto& shardId = cmdResult.shardId;
 
-            const auto& swResponse = cmdResult.swResponse;
-            if (!swResponse.isOK()) {
-                rawResBuilder.append(shardId.toString(),
-                                     BSON("error" << swResponse.getStatus().toString()));
-                if (firstFailedShardStatus.isOK())
-                    firstFailedShardStatus = swResponse.getStatus();
-                continue;
-            }
+                    const auto& swResponse = cmdResult.swResponse;
+                    if (!swResponse.isOK()) {
+                        rawResBuilder.append(shardId.toString(),
+                                             BSON("error" << swResponse.getStatus().toString()));
+                        if (firstFailedShardStatus.isOK())
+                            firstFailedShardStatus = swResponse.getStatus();
+                        continue;
+                    }
 
-            const auto& response = swResponse.getValue();
-            if (!response.isOK()) {
-                rawResBuilder.append(shardId.toString(),
-                                     BSON("error" << response.status.toString()));
-                if (firstFailedShardStatus.isOK())
-                    firstFailedShardStatus = response.status;
-                continue;
-            }
+                    const auto& response = swResponse.getValue();
+                    if (!response.isOK()) {
+                        rawResBuilder.append(shardId.toString(),
+                                             BSON("error" << response.status.toString()));
+                        if (firstFailedShardStatus.isOK())
+                            firstFailedShardStatus = response.status;
+                        continue;
+                    }
 
-            rawResBuilder.append(shardId.toString(), response.data);
+                    rawResBuilder.append(shardId.toString(), response.data);
 
-            const auto status = getStatusFromCommandResult(response.data);
-            if (!status.isOK()) {
-                if (firstFailedShardStatus.isOK())
-                    firstFailedShardStatus = status;
-                continue;
-            }
+                    const auto status = getStatusFromCommandResult(response.data);
+                    if (!status.isOK()) {
+                        if (firstFailedShardStatus.isOK())
+                            firstFailedShardStatus = status;
+                        continue;
+                    }
 
-            if (!response.data["valid"].trueValue()) {
-                isValid = false;
-            }
-        }
-        rawResBuilder.done();
+                    if (!response.data["valid"].trueValue()) {
+                        isValid = false;
+                    }
+                }
+                rawResBuilder.done();
 
-        if (firstFailedShardStatus.isOK()) {
-            if (!cri.isSharded()) {
-                CommandHelpers::filterCommandReplyForPassthrough(
-                    results[0].swResponse.getValue().data, &output);
-            } else {
-                output.appendBool("valid", isValid);
-            }
-        }
-        output.append("raw", rawResBuilder.obj());
+                if (firstFailedShardStatus.isOK()) {
+                    if (!routingCtx.getCollectionRoutingInfo(nss).isSharded()) {
+                        CommandHelpers::filterCommandReplyForPassthrough(
+                            results[0].swResponse.getValue().data, &output);
+                    } else {
+                        output.appendBool("valid", isValid);
+                    }
+                }
+                output.append("raw", rawResBuilder.obj());
 
-        uassertStatusOK(firstFailedShardStatus);
-        return true;
+                uassertStatusOK(firstFailedShardStatus);
+                return true;
+            });
     }
 };
 MONGO_REGISTER_COMMAND(ValidateCmd).forRouter();

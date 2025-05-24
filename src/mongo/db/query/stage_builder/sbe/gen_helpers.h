@@ -55,6 +55,7 @@
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/variables.h"
 #include "mongo/db/query/projection_ast.h"
+#include "mongo/db/query/sort_pattern.h"
 #include "mongo/db/query/stage_builder/sbe/abt/comparison_op.h"
 #include "mongo/db/query/stage_builder/sbe/builder_state.h"
 #include "mongo/db/query/stage_builder/sbe/sbexpr.h"
@@ -341,7 +342,7 @@ SbExpr rehydrateIndexKey(StageBuilderState& state,
 template <typename T>
 inline const char* getRawStringData(const T& str) {
     if constexpr (std::is_same_v<T, StringData>) {
-        return str.rawData();
+        return str.data();
     } else {
         return str.data();
     }
@@ -725,6 +726,7 @@ public:
 
     static std::vector<Type> getNodeTypes(const std::vector<ProjectNode>& nodes) {
         std::vector<Type> nodeTypes;
+        nodeTypes.reserve(nodes.size());
         for (const auto& node : nodes) {
             nodeTypes.emplace_back(node.type());
         }

@@ -67,7 +67,7 @@ public:
 
     const char* getSourceName() const final {
         // This is used in error reporting.
-        return DocumentSourceChangeStreamCheckInvalidate::kStageName.rawData();
+        return DocumentSourceChangeStreamCheckInvalidate::kStageName.data();
     }
 
     StageConstraints constraints(Pipeline::SplitState pipeState) const final {
@@ -96,6 +96,12 @@ public:
     static boost::intrusive_ptr<DocumentSourceChangeStreamCheckInvalidate> create(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
         const DocumentSourceChangeStreamSpec& spec);
+
+    static const Id& id;
+
+    Id getId() const override {
+        return id;
+    }
 
 private:
     /**

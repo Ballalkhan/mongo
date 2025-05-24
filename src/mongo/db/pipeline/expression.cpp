@@ -62,6 +62,7 @@
 #include "mongo/db/basic_types.h"
 #include "mongo/db/exec/expression/evaluate.h"
 #include "mongo/db/feature_compatibility_version_documentation.h"
+#include "mongo/db/feature_flag.h"
 #include "mongo/db/field_ref.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
@@ -141,7 +142,7 @@ struct ParserRegistration {
     Parser parser;
     AllowedWithApiStrict allowedWithApiStrict;
     AllowedWithClientType allowedWithClientType;
-    CheckableFeatureFlagRef featureFlag;
+    FeatureFlag* featureFlag;
 };
 
 StringMap<ParserRegistration> parserMap;
@@ -151,7 +152,7 @@ void Expression::registerExpression(string key,
                                     Parser parser,
                                     AllowedWithApiStrict allowedWithApiStrict,
                                     AllowedWithClientType allowedWithClientType,
-                                    CheckableFeatureFlagRef featureFlag) {
+                                    FeatureFlag* featureFlag) {
     auto op = parserMap.find(key);
     massert(17064,
             str::stream() << "Duplicate expression (" << key << ") registered.",
@@ -180,7 +181,9 @@ intrusive_ptr<Expression> Expression::parseExpression(ExpressionContext* const e
             it != parserMap.end());
 
     auto& entry = it->second;
-    expCtx->throwIfFeatureFlagIsNotEnabledOnFCV(opName, entry.featureFlag);
+    if (entry.featureFlag) {
+        expCtx->ignoreFeatureInParserOrRejectAndThrow(opName, *entry.featureFlag);
+    }
 
     if (expCtx->getOperationContext()) {
         assertLanguageFeatureIsAllowed(expCtx->getOperationContext(),
@@ -1469,12 +1472,14 @@ boost::intrusive_ptr<ExpressionObject> ExpressionObject::create(
     std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>>&&
         expressionsWithChildrenInPlace) {
     std::vector<boost::intrusive_ptr<Expression>> children;
-    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>> expressions;
+    children.reserve(expressionsWithChildrenInPlace.size());
     for (auto& [unused, expression] : expressionsWithChildrenInPlace)
         // These 'push_back's must complete before we insert references to the 'children' vector
         // into the 'expressions' vector since 'push_back' invalidates references.
         children.push_back(std::move(expression));
     std::vector<boost::intrusive_ptr<Expression>>::size_type index = 0;
+    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>> expressions;
+    expressions.reserve(expressionsWithChildrenInPlace.size());
     for (auto& [fieldName, unused] : expressionsWithChildrenInPlace) {
         expressions.emplace_back(fieldName, children[index]);
         ++index;
@@ -1687,7 +1692,7 @@ Value ExpressionFieldPath::evaluate(const Document& root, Variables* variables) 
 
 namespace {
 // Shared among expressions that need to serialize dotted paths and redact the path components.
-auto getPrefixAndPath(FieldPath path) {
+auto getPrefixAndPath(const FieldPath& path) {
     if (path.getFieldName(0) == "CURRENT" && path.getPathLength() > 1) {
         // use short form for "$$CURRENT.foo" but not just "$$CURRENT"
         return std::make_pair(std::string("$"), path.tail());
@@ -1987,7 +1992,7 @@ REGISTER_EXPRESSION_CONDITIONALLY(meta,
                                   ExpressionMeta::parse,
                                   AllowedWithApiStrict::kConditionally,
                                   AllowedWithClientType::kAny,
-                                  kDoesNotRequireFeatureFlag,
+                                  nullptr, /* featureFlag */
                                   true);
 
 void ExpressionMeta::_assertMetaFieldCompatibleWithStrictAPI(ExpressionContext* const expCtx,
@@ -2016,7 +2021,7 @@ void ExpressionMeta::_assertMetaFieldCompatibleWithHybridScoringFeatureFlag(
     static const std::set<MetaType> kHybridScoringProtectedFields = {MetaType::kScore,
                                                                      MetaType::kScoreDetails};
     const bool usesHybridScoringProtectedField = kHybridScoringProtectedFields.contains(type);
-    const bool hybridScoringFeatureFlagEnabled =
+    const bool hybridScoringFeatureFlagEnabled = expCtx->shouldParserIgnoreFeatureFlagCheck() ||
         feature_flags::gFeatureFlagRankFusionFull.isEnabledUseLastLTSFCVWhenUninitialized(
             serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
     uassert(ErrorCodes::FailedToParse,
@@ -2048,7 +2053,7 @@ void ExpressionMeta::_assertMetaFieldCompatibleWithStreamsFeatureFlag(
     DocumentMetadataFields::MetaType type,
     StringData typeName,
     boost::optional<StringData> optionalPath) {
-    bool streamsEnabled = expCtx->isFeatureFlagStreamsEnabled();
+    bool streamsEnabled = expCtx->shouldParserAllowStreams();
     // $meta: "stream" is only supported when the ff is enabled.
     uassert(9692105,
             ExpressionMeta::kParseErrPrefix + typeName,
@@ -2067,7 +2072,7 @@ ExpressionMeta::ParseMetaTypeResult ExpressionMeta::_parseMetaType(ExpressionCon
                                                                    StringData typeName) {
     boost::optional<StringData> fieldPath;
     if (size_t idx = typeName.find_first_of('.');
-        idx != StringData::npos && expCtx->isFeatureFlagStreamsEnabled()) {
+        idx != StringData::npos && expCtx->shouldParserAllowStreams()) {
         // An optional path is supported for { $meta: "stream.<path>" }
         uassert(9692107, ExpressionMeta::kParseErrPrefix + typeName, idx + 1 < typeName.size());
         fieldPath = typeName.substr(idx + 1);
@@ -2123,8 +2128,8 @@ REGISTER_EXPRESSION_CONDITIONALLY(
     ExpressionInternalRawSortKey::parse,
     AllowedWithApiStrict::kInternal,
     AllowedWithClientType::kInternal,
-    kDoesNotRequireFeatureFlag,
-    true);  // The 'condition' is always true - we just wanted to restrict to internal.
+    nullptr, /* nullptr */
+    true);   // The 'condition' is always true - we just wanted to restrict to internal.
 
 intrusive_ptr<Expression> ExpressionInternalRawSortKey::parse(ExpressionContext* const expCtx,
                                                               BSONElement expr,
@@ -2378,7 +2383,7 @@ Value ExpressionInternalFLEEqual::evaluate(const Document& root, Variables* vari
 }
 
 const char* ExpressionInternalFLEEqual::getOpName() const {
-    return kInternalFleEq.rawData();
+    return kInternalFleEq.data();
 }
 
 /* ----------------------- ExpressionInternalFLEBetween ---------------------------- */
@@ -2438,7 +2443,7 @@ Value ExpressionInternalFLEBetween::evaluate(const Document& root, Variables* va
 }
 
 const char* ExpressionInternalFLEBetween::getOpName() const {
-    return kInternalFleBetween.rawData();
+    return kInternalFleBetween.data();
 }
 
 /* ------------------------ ExpressionNary ----------------------------- */
@@ -2898,7 +2903,7 @@ Value ExpressionSortArray::evaluate(const Document& root, Variables* variables) 
 REGISTER_STABLE_EXPRESSION(sortArray, ExpressionSortArray::parse);
 
 const char* ExpressionSortArray::getOpName() const {
-    return kName.rawData();
+    return kName.data();
 }
 
 intrusive_ptr<Expression> ExpressionSortArray::optimize() {
@@ -3108,7 +3113,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(sigmoid,
                                       ExpressionSigmoid::parseExpressionSigmoid,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      feature_flags::gFeatureFlagRankFusionBasic);
+                                      &feature_flags::gFeatureFlagRankFusionBasic);
 
 /* ----------------------- ExpressionSize ---------------------------- */
 
@@ -3674,7 +3679,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(toUUID,
                                                           BinDataType::newUUID),
                                       AllowedWithApiStrict::kAlways,
                                       AllowedWithClientType::kAny,
-                                      feature_flags::gFeatureFlagBinDataConvert);
+                                      &feature_flags::gFeatureFlagBinDataConvert);
 
 boost::intrusive_ptr<Expression> ExpressionConvert::create(
     ExpressionContext* const expCtx,
@@ -3697,8 +3702,7 @@ boost::intrusive_ptr<Expression> ExpressionConvert::create(
         nullptr,
         byteOrder ? ExpressionConstant::create(expCtx, Value(toStringData(*byteOrder))) : nullptr,
         checkBinDataConvertAllowed(),
-        checkBinDataConvertNumericAllowed(
-            VersionContext::getDecoration(expCtx->getOperationContext())));
+        checkBinDataConvertNumericAllowed(expCtx));
 }
 
 ExpressionConvert::ExpressionConvert(ExpressionContext* const expCtx,
@@ -3731,8 +3735,7 @@ intrusive_ptr<Expression> ExpressionConvert::parse(ExpressionContext* const expC
             expr.type() == BSONType::Object);
 
     const bool allowBinDataConvert = checkBinDataConvertAllowed();
-    const bool allowBinDataConvertNumeric = checkBinDataConvertNumericAllowed(
-        VersionContext::getDecoration(expCtx->getOperationContext()));
+    const bool allowBinDataConvertNumeric = checkBinDataConvertNumericAllowed(expCtx);
 
     boost::intrusive_ptr<Expression> input;
     boost::intrusive_ptr<Expression> to;
@@ -3922,9 +3925,11 @@ bool ExpressionConvert::checkBinDataConvertAllowed() {
         serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
 }
 
-bool ExpressionConvert::checkBinDataConvertNumericAllowed(const VersionContext& vCtx) {
-    return feature_flags::gFeatureFlagBinDataConvertNumeric.isEnabledUseLatestFCVWhenUninitialized(
-        vCtx, serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
+bool ExpressionConvert::checkBinDataConvertNumericAllowed(const ExpressionContext* expCtx) {
+    return expCtx->shouldParserIgnoreFeatureFlagCheck() ||
+        feature_flags::gFeatureFlagBinDataConvertNumeric.isEnabledUseLatestFCVWhenUninitialized(
+            expCtx->getVersionContext(),
+            serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
 }
 
 namespace {
@@ -4139,7 +4144,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(currentDate,
                                       ExpressionCurrentDate::parse,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      feature_flags::gFeatureFlagCurrentDate);
+                                      &feature_flags::gFeatureFlagCurrentDate);
 
 ExpressionCurrentDate::ExpressionCurrentDate(ExpressionContext* const expCtx)
     : Expression(expCtx) {}
@@ -4785,7 +4790,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(uuid,
                                       ExpressionUUID::parse,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      feature_flags::gFeatureFlagUUIDExpression);
+                                      &feature_flags::gFeatureFlagUUIDExpression);
 
 ExpressionUUID::ExpressionUUID(ExpressionContext* const expCtx) : Expression(expCtx) {
     expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
@@ -4844,8 +4849,21 @@ ExpressionEncTextSearch::ExpressionEncTextSearch(ExpressionContext* const expCtx
     auto value = constant.getValue();
     auto encryptedBinDataType = getEncryptedBinDataType(value);
     if (encryptedBinDataType) {
-        // TODO SERVER-101128: Implement ParsedFindTextSearchPayload once SPM-2880 delivers the
-        // FLE2FindTextPayload. Initialize _evaluatorV2 with the zerosTokens.
+        if (encryptedBinDataType == EncryptedBinDataType::kFLE2FindTextPayload) {
+            // Parse the value as a ParsedFindTextSearchPayload, and use the server token to
+            // initiate _evaluatorV2 with the zerosTokens.
+            auto tokens = ParsedFindTextSearchPayload(value);
+            _evaluatorV2 = EncryptedPredicateEvaluatorV2(
+                {ServerZerosEncryptionToken::deriveFrom(tokens.server)});
+        } else {
+            // We may encounter a kFLE2Placeholder in the case that we reparse with query analysis.
+            // This happens when running in agg, as we serialize and reparse a $match during
+            // analyzeForMatch().
+            uassert(10112803,
+                    "Unexpected encrypted bindata type found on encrypted text search on field '" +
+                        fieldPathExpression.getFieldPathWithoutCurrentPrefix().fullPath() + "'.",
+                    encryptedBinDataType == EncryptedBinDataType::kFLE2Placeholder);
+        }
     } else {
         uassert(10111802,
                 "Unexpected value type found on encrypted text search on field '" +
@@ -4872,7 +4890,9 @@ const ExpressionConstant& ExpressionEncTextSearch::getText() const {
 }
 
 bool ExpressionEncTextSearch::canBeEvaluated() const {
-    return getEncryptedBinDataType(getText().getValue()) != boost::none;
+    auto encryptedBinDataType = getEncryptedBinDataType(getText().getValue());
+    return encryptedBinDataType &&
+        encryptedBinDataType == EncryptedBinDataType::kFLE2FindTextPayload;
 }
 
 /* --------------------------------- encStrStartsWith ------------------------------------------- */
@@ -4880,7 +4900,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(encStrStartsWith,
                                       ExpressionEncStrStartsWith::parse,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      gFeatureFlagQETextSearchPreview);
+                                      &gFeatureFlagQETextSearchPreview);
 
 ExpressionEncStrStartsWith::ExpressionEncStrStartsWith(ExpressionContext* const expCtx,
                                                        boost::intrusive_ptr<Expression> input,
@@ -4911,7 +4931,7 @@ Value ExpressionEncStrStartsWith::serialize(const SerializationOptions& options)
 }
 
 const char* ExpressionEncStrStartsWith::getOpName() const {
-    return kEncStrStartsWith.rawData();
+    return kEncStrStartsWith.data();
 }
 
 Value ExpressionEncStrStartsWith::evaluate(const Document& root, Variables* variables) const {
@@ -4926,7 +4946,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(encStrEndsWith,
                                       ExpressionEncStrEndsWith::parse,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      gFeatureFlagQETextSearchPreview);
+                                      &gFeatureFlagQETextSearchPreview);
 
 ExpressionEncStrEndsWith::ExpressionEncStrEndsWith(ExpressionContext* const expCtx,
                                                    boost::intrusive_ptr<Expression> input,
@@ -4956,7 +4976,7 @@ Value ExpressionEncStrEndsWith::serialize(const SerializationOptions& options) c
 }
 
 const char* ExpressionEncStrEndsWith::getOpName() const {
-    return kEncStrEndsWith.rawData();
+    return kEncStrEndsWith.data();
 }
 
 Value ExpressionEncStrEndsWith::evaluate(const Document& root, Variables* variables) const {
@@ -4971,7 +4991,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(encStrContains,
                                       ExpressionEncStrContains::parse,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      gFeatureFlagQETextSearchPreview);
+                                      &gFeatureFlagQETextSearchPreview);
 
 ExpressionEncStrContains::ExpressionEncStrContains(ExpressionContext* const expCtx,
                                                    boost::intrusive_ptr<Expression> input,
@@ -5002,7 +5022,7 @@ Value ExpressionEncStrContains::serialize(const SerializationOptions& options) c
 }
 
 const char* ExpressionEncStrContains::getOpName() const {
-    return kEncStrContains.rawData();
+    return kEncStrContains.data();
 }
 
 Value ExpressionEncStrContains::evaluate(const Document& root, Variables* variables) const {
@@ -5018,7 +5038,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(encStrNormalizedEq,
                                       ExpressionEncStrNormalizedEq::parse,
                                       AllowedWithApiStrict::kNeverInVersion1,
                                       AllowedWithClientType::kAny,
-                                      gFeatureFlagQETextSearchPreview);
+                                      &gFeatureFlagQETextSearchPreview);
 
 ExpressionEncStrNormalizedEq::ExpressionEncStrNormalizedEq(
     ExpressionContext* const expCtx,
@@ -5049,7 +5069,7 @@ Value ExpressionEncStrNormalizedEq::serialize(const SerializationOptions& option
 }
 
 const char* ExpressionEncStrNormalizedEq::getOpName() const {
-    return kEncStrNormalizedEq.rawData();
+    return kEncStrNormalizedEq.data();
 }
 
 Value ExpressionEncStrNormalizedEq::evaluate(const Document& root, Variables* variables) const {

@@ -105,6 +105,7 @@ mongo_cc_library(
         "//src/mongo/db/admission:flow_control",
         "//src/mongo/db/repl:optime",
         "//src/mongo/db/repl:repl_coordinator_interface",  # TODO(SERVER-93876): Remove.
+        "//src/mongo/db/storage:oplog_truncate_markers",
         "//src/mongo/db/storage:record_store_base",
     ],
 )
@@ -136,6 +137,7 @@ mongo_cc_library(
         "//src/mongo/db/storage:bson_collection_catalog_entry",
         "//src/mongo/db/storage:capped_snapshots",  # TODO(SERVER-93876): Remove.
         "//src/mongo/db/storage:durable_catalog",
+        "//src/mongo/db/storage:exceptions",
         "//src/mongo/db/storage:storage_options",  # TODO(SERVER-93876): Remove.
         "//src/mongo/db/views",  # TODO(SERVER-93876): Remove.
     ],
@@ -516,6 +518,7 @@ mongo_cc_library(
     deps = [
         ":catalog_stats",
         ":collection_catalog",
+        ":collection_record_store_options",
         ":database_holder",
         "//src/mongo/db:multitenancy",
         "//src/mongo/db:server_base",
@@ -544,6 +547,21 @@ mongo_cc_library(
     deps = [
         "//src/mongo/db/storage/wiredtiger:storage_wiredtiger",
         "//src/mongo/util:pcre_wrapper",
+    ],
+)
+
+mongo_cc_library(
+    name = "collection_record_store_options",
+    srcs = [
+        "collection_record_store_options.cpp",
+    ],
+    hdrs = [
+        "collection_record_store_options.h",
+    ],
+    deps = [
+        ":collection_options",
+        "//src/mongo/db:server_base",
+        "//src/mongo/db/storage:record_store_base",
     ],
 )
 
@@ -690,9 +708,7 @@ mongo_cc_unit_test(
         "historical_catalogid_tracker_test.cpp",
         "index_catalog_entry_impl_test.cpp",
         "index_catalog_impl_test.cpp",
-        "index_key_validate_test.cpp",
         "index_signature_test.cpp",
-        "index_spec_validate_test.cpp",
         "rename_collection_test.cpp",
         "storage_engine_collection_options_flags_parser_test.cpp",
     ],
@@ -737,8 +753,6 @@ mongo_cc_unit_test(
         "//src/mongo/db/op_observer:op_observer_impl",
         "//src/mongo/db/op_observer:operation_logger_impl",
         "//src/mongo/db/op_observer:operation_logger_mock",
-        "//src/mongo/db/query/collation:collator_factory_mock",
-        "//src/mongo/db/query/collation:collator_interface_mock",
         "//src/mongo/db/query/datetime:date_time_support",
         "//src/mongo/db/repl:oplog",
         "//src/mongo/db/repl:oplog_application",
@@ -756,6 +770,26 @@ mongo_cc_unit_test(
         "//src/mongo/unittest",
         "//src/mongo/util:clock_source_mock",
         "//src/mongo/util:pcre_wrapper",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "index_validate_test",
+    srcs = [
+        "index_key_validate_test.cpp",
+        "index_spec_validate_test.cpp",
+    ],
+    tags = [
+        "mongo_unittest_fourth_group",
+        "server-index-builds",
+    ],
+    deps = [
+        ":index_key_validate",
+        "//src/mongo/db:service_context_d_test_fixture",
+        "//src/mongo/db/query/collation:collator_factory_mock",
+        "//src/mongo/db/query/collation:collator_interface_mock",
+        "//src/mongo/idl:server_parameter_test_util",
+        "//src/mongo/unittest",
     ],
 )
 
@@ -799,5 +833,33 @@ mongo_cc_unit_test(
         "//src/mongo/unittest",
         "//src/mongo/util:clock_source_mock",
         "//src/mongo/util:pcre_wrapper",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "collection_record_store_options_test",
+    srcs = [
+        "collection_record_store_options_test.cpp",
+    ],
+    tags = ["mongo_unittest_eighth_group"],
+    deps = [
+        ":collection_record_store_options",
+        "//src/mongo/db:server_base",
+        "//src/mongo/db/storage:record_store_base",
+        "//src/mongo/unittest",
+    ],
+)
+
+mongo_cc_benchmark(
+    name = "catalog_control_bm",
+    srcs = [
+        "catalog_control_bm.cpp",
+    ],
+    deps = [
+        ":collection_catalog",
+        ":collection_mock",
+        "//src/mongo/db:service_context_d_test_fixture",
+        "//src/mongo/db/catalog:catalog_control",
+        "//src/mongo/db/repl:storage_interface_impl",
     ],
 )

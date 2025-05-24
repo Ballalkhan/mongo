@@ -197,11 +197,6 @@ public:
     // improve performance. Avoid using 'kAll' as much as possible.
     virtual NamespaceFilters getNamespaceFilters() const = 0;
 
-    virtual void onModifyCollectionShardingIndexCatalog(OperationContext* opCtx,
-                                                        const NamespaceString& nss,
-                                                        const UUID& uuid,
-                                                        BSONObj indexDoc) = 0;
-
     virtual void onCreateIndex(OperationContext* opCtx,
                                const NamespaceString& nss,
                                const UUID& uuid,
@@ -680,6 +675,20 @@ public:
      * Called when the authoritative DSS needs to be updated with a dropDatabase operation.
      */
     virtual void onDropDatabaseMetadata(OperationContext* opCtx, const repl::OplogEntry& op) = 0;
+
+    /**
+     * Called when the sharded cluster enters the transitional state of the two step replicaset to
+     * shard promotion process.
+     */
+    virtual void onBeginPromotionToShardedCluster(OperationContext* opCtx,
+                                                  const repl::OplogEntry& op) = 0;
+
+    /**
+     * Called when the sharded cluster leaves the transitional state of the two step replicaset to
+     * shard promotion process.
+     */
+    virtual void onCompletePromotionToShardedCluster(OperationContext* opCtx,
+                                                     const repl::OplogEntry& op) = 0;
 
     struct Times;
 

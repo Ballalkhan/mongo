@@ -85,11 +85,11 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/s/shard_server_test_fixture.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/tenant_id.h"
 #include "mongo/dbtests/dbtests.h"  // IWYU pragma: keep
 #include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/logv2/log_util.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
@@ -3584,7 +3584,7 @@ private:
 TEST_F(ChangeStreamPipelineOptimizationTest, ChangeStreamLookUpSize) {
     auto pipeline = makePipeline(
         {changestreamStage("{fullDocument: 'updateLookup', showExpandedEvents: true}")});
-    ASSERT_EQ(pipeline->getSources().size(), getChangeStreamStageSize());
+    ASSERT_EQ(pipeline->size(), getChangeStreamStageSize());
 
     // Make sure the change lookup is at the end.
     assertStageAtPos<DocumentSourceChangeStreamAddPostImage>(pipeline->getSources(), -1 /* pos */);
@@ -3619,7 +3619,7 @@ TEST_F(ChangeStreamPipelineOptimizationTest, FullDocumentBeforeChangeLookupSize)
     // filters out newly added events.
     auto pipeline = makePipeline(
         {changestreamStage("{fullDocumentBeforeChange: 'required', showExpandedEvents: true}")});
-    ASSERT_EQ(pipeline->getSources().size(), getChangeStreamStageSize());
+    ASSERT_EQ(pipeline->size(), getChangeStreamStageSize());
 
     // Make sure the pre-image lookup is at the end.
     assertStageAtPos<DocumentSourceChangeStreamAddPreImage>(pipeline->getSources(), -1 /* pos */);
@@ -6393,7 +6393,7 @@ TEST_F(PipelineRenameTracking, ReportsNewNameAcrossMultipleRenames) {
         // Tracking backwards.
         auto pipeline =
             makePipeline({mockStage(), RenamesAToB::create(expCtx), RenamesBToC::create(expCtx)});
-        auto stages = pipeline->getSources();
+        const auto& stages = pipeline->getSources();
         auto renames = semantic_analysis::renamedPaths(stages.crbegin(), stages.crend(), {"c"});
         ASSERT(static_cast<bool>(renames));
         auto nameMap = *renames;
@@ -6404,7 +6404,7 @@ TEST_F(PipelineRenameTracking, ReportsNewNameAcrossMultipleRenames) {
         // Tracking forwards.
         auto pipeline =
             makePipeline({mockStage(), RenamesAToB::create(expCtx), RenamesBToC::create(expCtx)});
-        auto stages = pipeline->getSources();
+        const auto& stages = pipeline->getSources();
         auto renames = semantic_analysis::renamedPaths(stages.cbegin(), stages.cend(), {"a"});
         ASSERT(static_cast<bool>(renames));
         auto nameMap = *renames;

@@ -73,7 +73,7 @@ public:
     }
 
     const char* getSourceName() const final {
-        return kStageName.rawData();
+        return kStageName.data();
     }
 
     StageConstraints constraints(Pipeline::SplitState pipeState) const final;
@@ -85,6 +85,12 @@ public:
     Value doSerialize(const SerializationOptions& opts = SerializationOptions{}) const final;
 
     void addVariableRefs(std::set<Variables::Id>* refs) const final {}
+
+    static const Id& id;
+
+    Id getId() const override {
+        return id;
+    }
 
 private:
     DocumentSourceChangeStreamCheckTopologyChange(

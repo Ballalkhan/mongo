@@ -76,13 +76,12 @@ std::unique_ptr<Pipeline, PipelineDeleter> buildPipelineFromViewDefinition(
     std::vector<BSONObj> currentPipeline,
     NamespaceString userNss) {
     auto validatorCallback = [](const Pipeline& pipeline) {
-        const auto& sources = pipeline.getSources();
-        std::for_each(sources.begin(), sources.end(), [](auto& src) {
+        for (const auto& src : pipeline.getSources()) {
             uassert(31441,
                     str::stream() << src->getSourceName()
                                   << " is not allowed within a $unionWith's sub-pipeline",
                     src->constraints().isAllowedInUnionPipeline());
-        });
+        }
     };
 
     MakePipelineOptions opts;
@@ -311,7 +310,7 @@ DocumentSource::GetNextResult DocumentSourceUnionWith::doGetNext() {
                 pExpCtx,
                 ResolvedNamespace{e->getNamespace(), e->getPipeline()},
                 std::move(serializedPipe),
-                e->getNamespace());
+                _userNss);
             logShardedViewFound(e);
             return doGetNext();
         }
@@ -442,7 +441,7 @@ Value DocumentSourceUnionWith::serialize(const SerializationOptions& opts) const
                         pExpCtx,
                         ResolvedNamespace{_resolvedNsForView->ns, _resolvedNsForView->pipeline},
                         std::move(recoveredPipeline),
-                        _resolvedNsForView->ns)
+                        _userNss)
                         .release();
             } else {
                 pipeCopy = Pipeline::parse(recoveredPipeline, _pipeline->getContext()).release();
@@ -490,7 +489,7 @@ Value DocumentSourceUnionWith::serialize(const SerializationOptions& opts) const
                     pExpCtx,
                     ResolvedNamespace{e->getNamespace(), e->getPipeline()},
                     std::move(serializedPipe),
-                    e->getNamespace());
+                    _userNss);
                 return preparePipelineAndExplain(resolvedPipeline.release());
             }
         }();

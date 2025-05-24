@@ -55,13 +55,12 @@
 #include "mongo/idl/generic_argument_gen.h"
 #include "mongo/idl/idl_parser.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/s/catalog_cache.h"
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/collection_routing_info_targeter.h"
 #include "mongo/s/commands/query_cmd/cluster_explain.h"
-#include "mongo/s/grid.h"
 #include "mongo/s/query/planner/cluster_aggregate.h"
 #include "mongo/s/query/planner/cluster_find.h"
+#include "mongo/s/router_role.h"
 
 namespace mongo {
 /**
@@ -251,6 +250,8 @@ public:
 
             try {
                 // Handle requests against a viewless timeseries collection.
+                // TODO SERVER-102925 remove this once the RoutingContext is integrated into
+                // Cluster::runAggregate()
                 if (convertAndRunAggregateIfViewlessTimeseries(
                         opCtx, result, cq.getFindCommandRequest(), querySettings, verbosity)) {
                     return;
@@ -261,60 +262,64 @@ public:
 
                 // We will time how long it takes to run the commands on the shards.
                 Timer timer;
-                const auto cri =
-                    uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(
-                        opCtx, cq.getFindCommandRequest().getNamespaceOrUUID().nss()));
+                const auto& nss = cq.getFindCommandRequest().getNamespaceOrUUID().nss();
 
-                // Create an RAII object that prints the collection's shard key in the case of a
-                // tassert or crash.
-                ScopedDebugInfo shardKeyDiagnostics(
-                    "ShardKeyDiagnostics",
-                    diagnostic_printers::ShardKeyDiagnosticPrinter{
-                        cri.isSharded() ? cri.getChunkManager().getShardKeyPattern().toBSON()
-                                        : BSONObj()});
+                routing_context_utils::withValidatedRoutingContext(
+                    opCtx, {nss}, [&](RoutingContext& routingCtx) {
+                        const auto& cri = routingCtx.getCollectionRoutingInfo(nss);
 
-                auto numShards = getTargetedShardsForCanonicalQuery(cq, cri).size();
-                // When forwarding the command to multiple shards, need to transform it by adjusting
-                // query parameters such as limits and sorts.
-                auto userLimit = _cmdRequest->getLimit();
-                auto userSkip = _cmdRequest->getSkip();
-                if (numShards > 1) {
-                    _cmdRequest = uassertStatusOK(ClusterFind::transformQueryForShards(cq));
-                }
+                        // Create an RAII object that prints the collection's shard key in the case
+                        // of a tassert or crash.
+                        ScopedDebugInfo shardKeyDiagnostics(
+                            "ShardKeyDiagnostics",
+                            diagnostic_printers::ShardKeyDiagnosticPrinter{
+                                cri.isSharded()
+                                    ? cri.getChunkManager().getShardKeyPattern().toBSON()
+                                    : BSONObj()});
 
-                const auto explainCmd = ClusterExplain::wrapAsExplain(
-                    !isRawDataOperation(opCtx) || expNs == ns()
-                        ? _cmdRequest->toBSON()
-                        : rewriteCommandForRawDataOperation<FindCommandRequest>(
-                              _cmdRequest->toBSON(), expNs.coll()),
-                    verbosity,
-                    querySettings.toBSON());
+                        auto numShards = getTargetedShardsForCanonicalQuery(cq, cri).size();
+                        // When forwarding the command to multiple shards, need to transform it by
+                        // adjusting query parameters such as limits and sorts.
+                        auto userLimit = _cmdRequest->getLimit();
+                        auto userSkip = _cmdRequest->getSkip();
+                        if (numShards > 1) {
+                            _cmdRequest = uassertStatusOK(ClusterFind::transformQueryForShards(cq));
+                        }
 
-                shardResponses = scatterGatherVersionedTargetByRoutingTable(
-                    opCtx,
-                    _cmdRequest->getNamespaceOrUUID().nss(),
-                    cri,
-                    explainCmd,
-                    ReadPreferenceSetting::get(opCtx),
-                    Shard::RetryPolicy::kIdempotent,
-                    _cmdRequest->getFilter(),
-                    _cmdRequest->getCollation(),
-                    _cmdRequest->getLet(),
-                    _cmdRequest->getLegacyRuntimeConstants());
-                millisElapsed = timer.millis();
+                        const auto explainCmd = ClusterExplain::wrapAsExplain(
+                            !isRawDataOperation(opCtx) || expNs == ns()
+                                ? _cmdRequest->toBSON()
+                                : rewriteCommandForRawDataOperation<FindCommandRequest>(
+                                      _cmdRequest->toBSON(), expNs.coll()),
+                            verbosity,
+                            querySettings.toBSON());
 
-                const char* mongosStageName =
-                    ClusterExplain::getStageNameForReadOp(shardResponses.size(), _request.body);
+                        shardResponses = scatterGatherVersionedTargetByRoutingTable(
+                            opCtx,
+                            _cmdRequest->getNamespaceOrUUID().nss(),
+                            routingCtx,
+                            explainCmd,
+                            ReadPreferenceSetting::get(opCtx),
+                            Shard::RetryPolicy::kIdempotent,
+                            _cmdRequest->getFilter(),
+                            _cmdRequest->getCollation(),
+                            _cmdRequest->getLet(),
+                            _cmdRequest->getLegacyRuntimeConstants());
+                        millisElapsed = timer.millis();
 
-                auto bodyBuilder = result->getBodyBuilder();
-                uassertStatusOK(ClusterExplain::buildExplainResult(expCtx,
-                                                                   shardResponses,
-                                                                   mongosStageName,
-                                                                   millisElapsed,
-                                                                   _request.body,
-                                                                   &bodyBuilder,
-                                                                   userLimit,
-                                                                   userSkip));
+                        const char* mongosStageName = ClusterExplain::getStageNameForReadOp(
+                            shardResponses.size(), _request.body);
+
+                        auto bodyBuilder = result->getBodyBuilder();
+                        uassertStatusOK(ClusterExplain::buildExplainResult(expCtx,
+                                                                           shardResponses,
+                                                                           mongosStageName,
+                                                                           millisElapsed,
+                                                                           _request.body,
+                                                                           &bodyBuilder,
+                                                                           userLimit,
+                                                                           userSkip));
+                    });
 
             } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
                 retryOnViewError(opCtx,

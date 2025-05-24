@@ -234,7 +234,7 @@
         "name": "Organization: github"
       },
       "name": "Boost C++ Libraries - boost",
-      "version": "1.79.0",
+      "version": "1.88.0",
       "licenses": [
         {
           "license": {
@@ -242,7 +242,7 @@
           }
         }
       ],
-      "purl": "pkg:github/boostorg/boost@boost-1.79.0",
+      "purl": "pkg:github/mongodb-forks/boost@boost-1.88.0",
       "properties": [
         {
           "name": "internal:team_responsible",
@@ -258,7 +258,7 @@
         },
         {
           "name": "import_script_path",
-          "value": "src/third_party/scripts/boost_get_sources.sh"
+          "value": "src/third_party/boost/scripts/import.sh"
         }
       ],
       "type": "library",
@@ -537,6 +537,49 @@
         "occurrences": [
           {
             "location": "src/third_party/fmt"
+          }
+        ]
+      },
+      "scope": "required"
+    },
+    {
+      "supplier": {
+        "name": "Organization: github"
+      },
+      "name": "folly",
+      "version": "v2025.04.21.00",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/folly/folly@v2025.04.21.00",
+      "properties": [
+        {
+          "name": "internal:team_responsible",
+          "value": "Workload Scheduling"
+        },
+        {
+          "name": "emits_persisted_data",
+          "value": "false"
+        },
+        {
+          "name": "info_link",
+          "value": "https://github.com/facebook/folly"
+        },
+        {
+          "name": "import_script_path",
+          "value": "src/third_party/folly/scripts/import.sh"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "b2fa8868-e134-4fcb-9641-6344ecfef39e",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "src/third_party/folly"
           }
         ]
       },
@@ -937,7 +980,7 @@
         "name": "Organization: github"
       },
       "name": "libmongocrypt",
-      "version": "1.12.0",
+      "version": "1.14.0",
       "licenses": [
         {
           "license": {
@@ -945,7 +988,7 @@
           }
         }
       ],
-      "purl": "pkg:github/mongodb/libmongocrypt@085a0ce6538a28179da6bfd2927aea106924443a",
+      "purl": "pkg:github/mongodb/libmongocrypt@6a3c15ef7502fe67b1f0fe15d817a7762f66fbac",
       "properties": [
         {
           "name": "internal:team_responsible",
@@ -1234,7 +1277,7 @@
         "name": "Organization: debian"
       },
       "name": "Mozilla Firefox",
-      "version": "128.8.0esr",
+      "version": "128.10.0esr",
       "licenses": [
         {
           "license": {
@@ -1242,7 +1285,7 @@
           }
         }
       ],
-      "purl": "pkg:deb/debian/firefox-esr@128.8.0esr-1",
+      "purl": "pkg:deb/debian/firefox-esr@128.10.0esr-1",
       "properties": [
         {
           "name": "internal:team_responsible",

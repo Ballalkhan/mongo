@@ -38,6 +38,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2204-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2204-large
       - name: test_packages
         distros:
           - ubuntu2204-large
@@ -93,6 +96,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2404-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2204-large
       - name: test_packages
         distros:
           - ubuntu2404-large
@@ -147,6 +153,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2004-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2004-large
       - name: test_packages
         distros:
           - ubuntu2204-large
@@ -191,6 +200,9 @@ buildvariants:
       compile_variant: enterprise-ubuntu2004-64
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - ubuntu2004-large
+      - name: run_unit_tests_TG
         distros:
           - ubuntu2004-large
       - name: test_packages
@@ -252,7 +264,7 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2204-large
-      - name: compile_test_parallel_unittest_stream_TG
+      - name: run_unit_tests_TG
         distros:
           - ubuntu2204-large
       - name: test_packages
@@ -345,6 +357,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2004-arm64-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2004-arm64-large
       - name: test_packages
         distros:
           - ubuntu2204-arm64-small
@@ -391,6 +406,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2004-arm64-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2004-arm64-large
       - name: test_packages
         distros:
           - ubuntu2204-arm64-small
@@ -434,7 +452,7 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2204-arm64-large
-      - name: compile_test_parallel_unittest_stream_TG
+      - name: run_unit_tests_TG
         distros:
           - ubuntu2204-arm64-large
       - name: test_packages
@@ -483,6 +501,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2204-arm64-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2204-arm64-large
       - name: test_packages
         distros:
           - ubuntu2204-arm64-large
@@ -526,6 +547,9 @@ buildvariants:
       compile_variant: enterprise-ubuntu2404
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - ubuntu2404-large
+      - name: run_unit_tests_TG
         distros:
           - ubuntu2404-large
       - name: test_packages
@@ -577,6 +601,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - ubuntu2404-arm64-large
+      - name: run_unit_tests_TG
+        distros:
+          - ubuntu2404-arm64-large
       - name: test_packages
         distros:
           - ubuntu2404-arm64-large
@@ -616,6 +643,9 @@ buildvariants:
       large_distro_name: ubuntu2404-arm64-large
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - ubuntu2404-arm64-large
+      - name: run_unit_tests_TG
         distros:
           - ubuntu2404-arm64-large
       - name: test_packages

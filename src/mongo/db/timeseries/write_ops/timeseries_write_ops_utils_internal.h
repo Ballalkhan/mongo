@@ -38,7 +38,6 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/timeseries/bucket_catalog/write_batch.h"
-#include "mongo/db/timeseries/timeseries_options.h"
 #include "mongo/db/timeseries/write_ops/measurement.h"
 #include "mongo/util/tracking/allocator.h"
 
@@ -62,8 +61,6 @@ struct BucketDocument {
     boost::optional<BSONObj> compressedBucket;
     bool compressionFailed = false;
 };
-
-using TimeseriesStmtIds = stdx::unordered_map<bucket_catalog::WriteBatch*, std::vector<StmtId>>;
 
 inline NamespaceString makeTimeseriesBucketsNamespace(const NamespaceString& nss) {
     return nss.isTimeseriesBucketsCollection() ? nss : nss.makeTimeseriesBucketsNamespace();
@@ -106,7 +103,6 @@ BSONObj makeBSONColumnDocDiff(
 
 BSONObj makeTimeseriesInsertCompressedBucketDocument(
     std::shared_ptr<bucket_catalog::WriteBatch> batch,
-    const BSONObj& metadata,
     const std::vector<
         std::pair<StringData, BSONColumnBuilder<tracking::Allocator<void>>::BinaryDiff>>&
         intermediates);
@@ -117,31 +113,11 @@ BSONObj makeTimeseriesInsertCompressedBucketDocument(
 mongo::write_ops::WriteCommandRequestBase makeTimeseriesWriteOpBase(std::vector<StmtId>&& stmtIds);
 
 /**
- * Builds the insert command request from a time-series insert write batch.
- */
-mongo::write_ops::InsertCommandRequest makeTimeseriesInsertOp(
-    std::shared_ptr<timeseries::bucket_catalog::WriteBatch> batch,
-    const NamespaceString& bucketsNs,
-    const BSONObj& metadata,
-    std::vector<StmtId>&& stmtIds = {});
-
-/**
  * Builds insert command request, as above, but expects StmtId's in WriteBatch.
  */
 mongo::write_ops::InsertCommandRequest makeTimeseriesInsertOpFromBatch(
     std::shared_ptr<timeseries::bucket_catalog::WriteBatch> batch,
-    const NamespaceString& bucketsNs,
-    const BSONObj& metadata);
-
-/**
- * Builds the update command request from a time-series insert write batch.
- */
-mongo::write_ops::UpdateCommandRequest makeTimeseriesUpdateOp(
-    OperationContext* opCtx,
-    std::shared_ptr<timeseries::bucket_catalog::WriteBatch> batch,
-    const NamespaceString& bucketsNs,
-    const BSONObj& metadata,
-    std::vector<StmtId>&& stmtIds = {});
+    const NamespaceString& bucketsNs);
 
 /**
  * Builds update command request, as above, but expects StmtId's in WriteBatch.
@@ -150,14 +126,6 @@ mongo::write_ops::UpdateCommandRequest makeTimeseriesCompressedDiffUpdateOpFromB
     OperationContext* opCtx,
     std::shared_ptr<timeseries::bucket_catalog::WriteBatch> batch,
     const NamespaceString& bucketsNs);
-
-/**
- * Builds the delta update oplog entry from a time-series insert write batch.
- */
-mongo::write_ops::UpdateOpEntry makeTimeseriesUpdateOpEntry(
-    OperationContext* opCtx,
-    std::shared_ptr<bucket_catalog::WriteBatch> batch,
-    const BSONObj& metadata);
 
 /**
  * Returns an update request to the bucket when the 'measurements' is non-empty. Otherwise, returns
@@ -170,28 +138,13 @@ makeModificationOp(const OID& bucketId,
                    const boost::optional<Date_t>& currentMinTime);
 
 /**
- * Builds the DocDiff update command request from a time-series insert write batch.
- * Assumes min/max in WriteBatch have already been updated to reflect new measurements in batch.
- *
- * Build the before and after data fields of the bucket documents efficiently with the column
- * builders, but do not build out the rest of the bucket document (control field, etc). Then
- * generate an update op based on the diff of the data fields, and relevant fields of control field.
- */
-mongo::write_ops::UpdateCommandRequest makeTimeseriesCompressedDiffUpdateOp(
-    OperationContext* opCtx,
-    std::shared_ptr<timeseries::bucket_catalog::WriteBatch> batch,
-    const NamespaceString& bucketsNs,
-    std::vector<StmtId>&& stmtIds = {});
-
-/**
  * Generates the compressed diff using the BSONColumnBuilders stored in the batch and the
  * intermediate() interface.
  */
 mongo::write_ops::UpdateOpEntry makeTimeseriesCompressedDiffEntry(
     OperationContext* opCtx,
     std::shared_ptr<bucket_catalog::WriteBatch> batch,
-    bool changedToUnsorted,
-    const std::vector<details::Measurement>& sortedMeasurements);
+    bool changedToUnsorted);
 
 mongo::write_ops::UpdateCommandRequest makeTimeseriesTransformationOp(
     OperationContext* opCtx,
@@ -208,32 +161,12 @@ mongo::write_ops::UpdateOpEntry makeTimeseriesTransformationOpEntry(
     mongo::write_ops::UpdateModification::TransformFunc transformationFunc);
 
 /**
- * Builds the insert and update requests for performing the writes to storage from the write batches
- * provided.
- */
-void makeWriteRequest(OperationContext* opCtx,
-                      std::shared_ptr<bucket_catalog::WriteBatch> batch,
-                      const BSONObj& metadata,
-                      TimeseriesStmtIds& stmtIds,
-                      const NamespaceString& bucketsNs,
-                      std::vector<mongo::write_ops::InsertCommandRequest>* insertOps,
-                      std::vector<mongo::write_ops::UpdateCommandRequest>* updateOps);
-
-/**
  * Builds the insert and update requests, as above, but expects StmtId's in WriteBatch.
  */
 void makeWriteRequestFromBatch(OperationContext* opCtx,
                                std::shared_ptr<bucket_catalog::WriteBatch> batch,
-                               const BSONObj& metadata,
                                const NamespaceString& bucketsNs,
                                std::vector<mongo::write_ops::InsertCommandRequest>* insertOps,
                                std::vector<mongo::write_ops::UpdateCommandRequest>* updateOps);
-
-/**
- * Returns collection of measurements sorted on time field.
- * Filters out meta field from input and does not include it in output.
- */
-std::vector<details::Measurement> sortMeasurementsOnTimeField(
-    std::shared_ptr<bucket_catalog::WriteBatch> batch);
 
 }  // namespace mongo::timeseries::write_ops_utils

@@ -628,7 +628,7 @@ IndexCatalogEntry* IndexCatalogImpl::createIndexEntry(OperationContext* opCtx,
     }
 
     auto engine = opCtx->getServiceContext()->getStorageEngine();
-    std::string ident = engine->getDurableCatalog()->getIndexIdent(
+    std::string ident = engine->getMDBCatalog()->getIndexIdent(
         opCtx, collection->getCatalogId(), descriptor.indexName());
 
     bool isReadyIndex = CreateIndexEntryFlags::kIsReady & flags;
@@ -658,8 +658,24 @@ IndexCatalogEntry* IndexCatalogImpl::createIndexEntry(OperationContext* opCtx,
     }
 
     if (!frozen) {
-        entry->setAccessMethod(IndexAccessMethod::make(
-            opCtx, collection->ns(), collection->getCollectionOptions(), entry.get(), ident));
+        try {
+            entry->setAccessMethod(IndexAccessMethod::make(
+                opCtx, collection->ns(), collection->getCollectionOptions(), entry.get(), ident));
+        } catch (const ExceptionFor<ErrorCodes::NoSuchKey>& ex) {
+            // Ready indexes should always exist in the storage engine, and if they're missing
+            // something has gone significantly wrong.
+            if (isReadyIndex)
+                throw;
+
+            // Non-ready indexes being missing isn't normal, but isn't an error. We may have crashed
+            // while creating the index and added it to the catalog but not the storage engine, or
+            // while restarting an index build and have dropped the old ident but not recreated it
+            // yet. If the ident was present we'd just drop and recreate it anyway.
+            LOGV2(10398601,
+                  "Non-frozen, non-ready index was missing entirely when loading the index "
+                  "catalog. The index will be recreated by the index build process.",
+                  "error"_attr = ex);
+        }
     }
 
     IndexCatalogEntry* save = entry.get();
@@ -1379,14 +1395,15 @@ Status IndexCatalogImpl::resetUnfinishedIndexForRecovery(OperationContext* opCtx
         return status;
     }
 
-    // Recreate the ident on-disk. DurableCatalog::createIndex() will lookup the ident internally
+    // Recreate the ident on-disk. durable_catalog::createIndex() will lookup the ident internally
     // using the catalogId and index name.
     const auto indexDescriptor = released->descriptor();
-    status = DurableCatalog::get(opCtx)->createIndex(opCtx,
-                                                     collection->getCatalogId(),
-                                                     collection->ns(),
-                                                     collection->getCollectionOptions(),
-                                                     indexDescriptor->toIndexConfig());
+    status = durable_catalog::createIndex(opCtx,
+                                          collection->getCatalogId(),
+                                          collection->ns(),
+                                          collection->getCollectionOptions(),
+                                          indexDescriptor->toIndexConfig(),
+                                          MDBCatalog::get(opCtx));
     if (!status.isOK()) {
         return status;
     }

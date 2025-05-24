@@ -47,17 +47,20 @@
 namespace mongo {
 namespace {
 
-using DocumentSourceScoreTest = AggregationContextFixture;
-
-// Sigmoid function: 1/(1+exp(-x))
-double testEvaluateSigmoid(double score) {
-    return 1 / (1 + std::exp((-1 * score)));
-}
+/**
+ * This test fixture will provide tests with an ExpressionContext (among other things like
+ * OperationContext, etc.) and configure the common feature flags that we need.
+ */
+class DocumentSourceScoreTest : service_context_test::WithSetupTransportLayer,
+                                public AggregationContextFixture {
+private:
+    RAIIServerParameterControllerForTest scoreFusionFlag{"featureFlagSearchHybridScoringFull",
+                                                         true};
+    // Feature flag needed to use 'score' meta field
+    RAIIServerParameterControllerForTest rankFusionFlag{"featureFlagRankFusionFull", true};
+};
 
 TEST_F(DocumentSourceScoreTest, ErrorsIfNoScoreField) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
         $score: {
         }
@@ -69,9 +72,6 @@ TEST_F(DocumentSourceScoreTest, ErrorsIfNoScoreField) {
 }
 
 TEST_F(DocumentSourceScoreTest, CheckNoOptionalArgsIncluded) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
         $score: {
             score: "$myScore"
@@ -81,67 +81,65 @@ TEST_F(DocumentSourceScoreTest, CheckNoOptionalArgsIncluded) {
     Document inputDoc = Document{{"myScore", 5}};
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
 
-    ASSERT_DOES_NOT_THROW(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx())
-                              ->setSource(mock.get()));
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    // Default is sigmoid so a normalization stage for sigmoid will be included in the desugared
+    // list.
+    ASSERT_EQ(desugaredList.size(), 2);
+    boost::intrusive_ptr<DocumentSource> ds = *desugaredList.begin();
+    ASSERT_DOES_NOT_THROW(ds->setSource(mock.get()));
 }
 
 TEST_F(DocumentSourceScoreTest, CheckAllOptionalArgsIncluded) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "expression",
-            normalizeFunction: "none",
-            weight: 1.0
-        }
-    })");
+         $score: {
+             score: "expression",
+             normalizeFunction: "none",
+             weight: 1.0
+         }
+     })");
 
     ASSERT_DOES_NOT_THROW(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()));
 }
 
 TEST_F(DocumentSourceScoreTest, CheckOnlyNormalizeFunctionSpecified) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "expression",
-            normalizeFunction: "none"
-        }
-    })");
+         $score: {
+             score: "expression",
+             normalizeFunction: "none"
+         }
+     })");
 
     ASSERT_DOES_NOT_THROW(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()));
 }
 
 TEST_F(DocumentSourceScoreTest, CheckOnlyWeightSpecified) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            weight: 1.0
-        }
-    })");
+         $score: {
+             score: "$myScore",
+             weight: 1.0
+         }
+     })");
 
     Document inputDoc = Document{{"myScore", 5}};
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
 
-    ASSERT_DOES_NOT_THROW(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx())
-                              ->setSource(mock.get()));
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    // Default is sigmoid so a normalization stage for sigmoid will be included in the desugared
+    // list.
+    ASSERT_EQ(desugaredList.size(), 2);
+    boost::intrusive_ptr<DocumentSource> ds = *desugaredList.begin();
+    ASSERT_DOES_NOT_THROW(ds->setSource(mock.get()));
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsIfWrongNormalizeFunctionType) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "expression",
-            normalizeFunction: 1.0
-        }
-    })");
+         $score: {
+             score: "expression",
+             normalizeFunction: 1.0
+         }
+     })");
 
     ASSERT_THROWS_CODE(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()),
                        AssertionException,
@@ -149,15 +147,12 @@ TEST_F(DocumentSourceScoreTest, ErrorsIfWrongNormalizeFunctionType) {
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsIfWrongWeightType) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "expression",
-            weight: "1.0"
-        }
-    })");
+         $score: {
+             score: "expression",
+             weight: "1.0"
+         }
+     })");
 
     ASSERT_THROWS_CODE(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()),
                        AssertionException,
@@ -165,19 +160,19 @@ TEST_F(DocumentSourceScoreTest, ErrorsIfWrongWeightType) {
 }
 
 TEST_F(DocumentSourceScoreTest, CheckIntScoreMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "none",
-            weight: 1.0
-        }
-    })");
+         $score: {
+             score: "$myScore",
+             normalizeFunction: "none",
+             weight: 1.0
+         }
+     })");
     Document inputDoc = Document{{"myScore", 5}};
 
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_EQ(desugaredList.size(), 1);
+    boost::intrusive_ptr<DocumentSource> docSourceScore = *desugaredList.begin();
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
     docSourceScore->setSource(mock.get());
 
@@ -189,19 +184,19 @@ TEST_F(DocumentSourceScoreTest, CheckIntScoreMetadataUpdated) {
 }
 
 TEST_F(DocumentSourceScoreTest, CheckDoubleScoreMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "none",
-            weight: 1.0
-        }
-    })");
+         $score: {
+             score: "$myScore",
+             normalizeFunction: "none",
+             weight: 1.0
+         }
+     })");
     Document inputDoc = Document{{"myScore", 5.1}};
 
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_EQ(desugaredList.size(), 1);
+    boost::intrusive_ptr<DocumentSource> docSourceScore = *desugaredList.begin();
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
     docSourceScore->setSource(mock.get());
 
@@ -213,19 +208,19 @@ TEST_F(DocumentSourceScoreTest, CheckDoubleScoreMetadataUpdated) {
 }
 
 TEST_F(DocumentSourceScoreTest, CheckLengthyDocScoreMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "none"
-        }
-    })");
+          $score: {
+              score: "$myScore",
+              normalizeFunction: "none"
+          }
+      })");
     Document inputDoc =
         Document{{"field1", "hello"_sd}, {"field2", 10}, {"myScore", 5.3}, {"field3", true}};
 
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_EQ(desugaredList.size(), 1);
+    boost::intrusive_ptr<DocumentSource> docSourceScore = *desugaredList.begin();
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
     docSourceScore->setSource(mock.get());
 
@@ -237,19 +232,19 @@ TEST_F(DocumentSourceScoreTest, CheckLengthyDocScoreMetadataUpdated) {
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsIfScoreNotDouble) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "none"
-        }
-    })");
+          $score: {
+              score: "$myScore",
+              normalizeFunction: "none"
+          }
+      })");
     Document inputDoc =
         Document{{"field1", "hello"_sd}, {"field2", 10}, {"myScore", "5.3"_sd}, {"field3", true}};
 
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_EQ(desugaredList.size(), 1);
+    boost::intrusive_ptr<DocumentSource> docSourceScore = *desugaredList.begin();
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
     docSourceScore->setSource(mock.get());
 
@@ -258,18 +253,18 @@ TEST_F(DocumentSourceScoreTest, ErrorsIfScoreNotDouble) {
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsIfExpressionFieldPathDoesNotExist) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "none"
-        }
-    })");
+          $score: {
+              score: "$myScore",
+              normalizeFunction: "none"
+          }
+      })");
     Document inputDoc = Document{{"field1", "hello"_sd}, {"field2", 10}, {"field3", true}};
 
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_EQ(desugaredList.size(), 1);
+    boost::intrusive_ptr<DocumentSource> docSourceScore = *desugaredList.begin();
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
     docSourceScore->setSource(mock.get());
 
@@ -278,15 +273,12 @@ TEST_F(DocumentSourceScoreTest, ErrorsIfExpressionFieldPathDoesNotExist) {
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsIfScoreInvalidExpression) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: { $ad: ['$myScore', '$otherScore'] },
-            normalizeFunction: "none"
-        }
-    })");
+          $score: {
+              score: { $ad: ['$myScore', '$otherScore'] },
+              normalizeFunction: "none"
+          }
+      })");
     Document inputDoc =
         Document{{"field1", "hello"_sd}, {"otherScore", 10}, {"myScore", 5.3}, {"field3", true}};
 
@@ -297,19 +289,19 @@ TEST_F(DocumentSourceScoreTest, ErrorsIfScoreInvalidExpression) {
 }
 
 TEST_F(DocumentSourceScoreTest, ChecksScoreMetadatUpdatedValidExpression) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: { $add: ['$myScore', '$otherScore'] },
-            normalizeFunction: "none"
-        }
-    })");
+          $score: {
+              score: { $add: ['$myScore', '$otherScore'] },
+              normalizeFunction: "none"
+          }
+      })");
     Document inputDoc =
         Document{{"field1", "hello"_sd}, {"otherScore", 10}, {"myScore", 5.3}, {"field3", true}};
 
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_EQ(desugaredList.size(), 1);
+    boost::intrusive_ptr<DocumentSource> docSourceScore = *desugaredList.begin();
     auto mock = DocumentSourceMock::createForTest(inputDoc, getExpCtx());
     docSourceScore->setSource(mock.get());
 
@@ -320,102 +312,14 @@ TEST_F(DocumentSourceScoreTest, ChecksScoreMetadatUpdatedValidExpression) {
     ASSERT_EQ(next.releaseDocument().metadata().getScore(), 15.3);
 }
 
-TEST_F(DocumentSourceScoreTest, CheckNormFuncSigmoidScoreMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
-    auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "sigmoid"
-        }
-    })");
-    double myScore = 5.3;
-    Document inputDoc = Document{
-        {"field1", "hello"_sd}, {"otherScore", 10}, {"myScore", myScore}, {"field3", true}};
-
-    boost::intrusive_ptr<ExpressionContextForTest> pExpCtx = getExpCtx();
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), pExpCtx);
-    auto mock = DocumentSourceMock::createForTest(inputDoc, pExpCtx);
-    docSourceScore->setSource(mock.get());
-
-    auto next = docSourceScore->getNext();
-    ASSERT(next.isAdvanced());
-
-    double sigmoidDbl = testEvaluateSigmoid(myScore);
-
-    // Assert inputDoc's score metadata is sigmoid(5.3)
-    ASSERT_EQ(next.releaseDocument().metadata().getScore(), sigmoidDbl);
-}
-
-TEST_F(DocumentSourceScoreTest, CheckNormFuncSigmoidWeightScoreMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
-    auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "sigmoid",
-            weight: 0.5
-        }
-    })");
-    double myScore = 5.3;
-    Document inputDoc = Document{
-        {"field1", "hello"_sd}, {"otherScore", 10}, {"myScore", myScore}, {"field3", true}};
-
-    boost::intrusive_ptr<ExpressionContextForTest> pExpCtx = getExpCtx();
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), pExpCtx);
-    auto mock = DocumentSourceMock::createForTest(inputDoc, pExpCtx);
-    docSourceScore->setSource(mock.get());
-
-    auto next = docSourceScore->getNext();
-    ASSERT(next.isAdvanced());
-
-    double sigmoidDbl = testEvaluateSigmoid(myScore) * 0.5;
-
-    // Assert inputDoc's score metadata is (0.5 * sigmoid(5.3))
-    ASSERT_EQ(next.releaseDocument().metadata().getScore(), sigmoidDbl);
-}
-
-TEST_F(DocumentSourceScoreTest, CheckWeightScoreMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
-    auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            weight: 0.5
-        }
-    })");
-    double myScore = 5.3;
-    Document inputDoc = Document{
-        {"field1", "hello"_sd}, {"otherScore", 10}, {"myScore", myScore}, {"field3", true}};
-
-    boost::intrusive_ptr<ExpressionContextForTest> pExpCtx = getExpCtx();
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), pExpCtx);
-    auto mock = DocumentSourceMock::createForTest(inputDoc, pExpCtx);
-    docSourceScore->setSource(mock.get());
-
-    auto next = docSourceScore->getNext();
-    ASSERT(next.isAdvanced());
-
-    double sigmoidDbl = testEvaluateSigmoid(myScore) * 0.5;
-
-    // Assert inputDoc's score metadata is (0.5 * sigmoid(5.3))
-    ASSERT_EQ(next.releaseDocument().metadata().getScore(), sigmoidDbl);
-}
-
 TEST_F(DocumentSourceScoreTest, ErrorsNormFuncSigmoidInvalidWeight) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "sigmoid",
-            weight: -0.5
-        }
-    })");
+          $score: {
+              score: "$myScore",
+              normalizeFunction: "sigmoid",
+              weight: -0.5
+          }
+      })");
 
     ASSERT_THROWS_CODE(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()),
                        AssertionException,
@@ -423,15 +327,12 @@ TEST_F(DocumentSourceScoreTest, ErrorsNormFuncSigmoidInvalidWeight) {
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsInvalidWeight) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            weight: 1.5
-        }
-    })");
+          $score: {
+              score: "$myScore",
+              weight: 1.5
+          }
+      })");
 
     ASSERT_THROWS_CODE(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()),
                        AssertionException,
@@ -439,132 +340,490 @@ TEST_F(DocumentSourceScoreTest, ErrorsInvalidWeight) {
 }
 
 TEST_F(DocumentSourceScoreTest, ErrorsInvalidNormalizeFunction) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
     auto spec = fromjson(R"({
-        $score: {
-            score: "$myScore",
-            normalizeFunction: "Sigmoid",
-            weight: 0.5
-        }
-    })");
+          $score: {
+              score: "$myScore",
+              normalizeFunction: "Sigmoid",
+              weight: 0.5
+          }
+      })");
 
     ASSERT_THROWS_CODE(DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx()),
                        AssertionException,
                        ErrorCodes::BadValue);
 }
 
-TEST_F(DocumentSourceScoreTest, CheckNormFuncNoneWeightScoreZeroMetadataUpdated) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRankFusionFull", true);
-    RAIIServerParameterControllerForTest extraFeatureFlagController(
-        "featureFlagSearchHybridScoringFull", true);
+void runRepresentativeQueryShapeTest(boost::intrusive_ptr<ExpressionContextForTest> expCtx,
+                                     const BSONObj& querySpec,
+                                     const std::string& expectedDesugar) {
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(querySpec.firstElement(), expCtx);
+    const auto pipeline = Pipeline::create(desugaredList, expCtx);
+    BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+
+    ASSERT_BSONOBJ_EQ_AUTO(expectedDesugar, asOneObj);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeExpressionNoNormalization) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: {$multiply: ["$myScore", "$myScore"]},
+            normalizeFunction: "none"
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": {
+                    "$multiply": [
+                        "$myScore",
+                        "$myScore"
+                    ]
+                }
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeNoNormalizationUnweighted) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: "$myScore",
+            normalizeFunction: "none"
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": "$myScore"
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeNoNormalizationWeighted) {
     auto spec = fromjson(R"({
         $score: {
             score: "$myScore",
             normalizeFunction: "none",
-            weight: 0
+            weight: 0.5
         }
     })");
-    double myScore = 5.3;
-    Document inputDoc = Document{
-        {"field1", "hello"_sd}, {"otherScore", 10}, {"myScore", myScore}, {"field3", true}};
 
-    boost::intrusive_ptr<ExpressionContextForTest> pExpCtx = getExpCtx();
-    auto docSourceScore = DocumentSourceScore::createFromBson(spec.firstElement(), pExpCtx);
-    auto mock = DocumentSourceMock::createForTest(inputDoc, pExpCtx);
-    docSourceScore->setSource(mock.get());
-
-    auto next = docSourceScore->getNext();
-    ASSERT(next.isAdvanced());
-
-    double sigmoidDbl = testEvaluateSigmoid(myScore) * 0;
-
-    // Assert inputDoc's score metadata is (0 * 5.3)
-    ASSERT_EQ(next.releaseDocument().metadata().getScore(), sigmoidDbl);
-}
-
-
-TEST_F(DocumentSourceScoreTest, QueryShapeDebugString) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagSearchHybridScoringFull",
-                                                               true);
-
-    SerializationOptions opts = SerializationOptions::kDebugShapeAndMarkIdentifiers_FOR_TEST;
-
-    {
-        BSONObj spec = fromjson("{$score: {score: \"$myScore\", normalizeFunction: \"none\"}}");
-        auto score = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
-        std::vector<Value> output;
-        score->serializeToArray(output, opts);
-        ASSERT_EQ(output.size(), 1);
-        ASSERT_BSONOBJ_EQ_AUTO(
-            R"({
-                $setMetadata: {
-                    score: "$HASH<myScore>"
-                }
-            })",
-            output.front().getDocument().toBson());
-    }
-
-    {
-        BSONObj spec = fromjson(R"({
-            $score: {
-                score: "$myScore",
-                normalizeFunction: "sigmoid",
-                weight: 0.5
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": "$myScore"
             }
-        })");
-        auto score = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
-        std::vector<Value> output;
-        score->serializeToArray(output, opts);
-        ASSERT_EQ(output.size(), 1);
-        ASSERT_BSONOBJ_EQ_AUTO(
-            R"({
+        },
+        {
             "$setMetadata": {
                 "score": {
                     "$multiply": [
+                        {"$meta": "score"},
+                        {"$const": 0.5}
+                    ]
+                }
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeSigmoidNormalization) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: "$myScore",
+            normalizeFunction: "sigmoid"
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": "$myScore"
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": {
+                    "$divide": [
+                        {"$const": 1},
                         {
-                            "$divide": [
-                                "?number",
+                            "$add": [
+                                {"$const": 1},
                                 {
-                                    "$add": [
-                                        "?number",
+                                    "$exp": [
                                         {
-                                            "$exp": [
-                                                {
-                                                    "$multiply": [
-                                                        "?number",
-                                                        "$HASH<myScore>"
-                                                    ]
-                                                }
+                                            "$multiply": [
+                                                {"$const": -1},
+                                                {"$meta": "score"}
                                             ]
                                         }
                                     ]
                                 }
                             ]
-                        },
-                        "?number"
+                        }
                     ]
                 }
             }
-        })",
-            output.front().getDocument().toBson());
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeSigmoidNormalizationWeighted) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: "$myScore",
+            normalizeFunction: "sigmoid",
+            weight: 0.5
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": "$myScore"
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": {
+                    "$divide": [
+                        {"$const": 1},
+                        {
+                            "$add": [
+                                {"$const": 1},
+                                {
+                                    "$exp": [
+                                        {
+                                            "$multiply": [
+                                                {"$const": -1},
+                                                {"$meta": "score"}
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": {
+                    "$multiply": [
+                        {"$meta": "score"},
+                        {"$const": 0.5}
+                    ]
+                }
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeExpressionSigmoidNormalization) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: {$multiply: ["$myScore", "$myScore"]},
+            normalizeFunction: "sigmoid"
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": {
+                    "$multiply": [
+                        "$myScore",
+                        "$myScore"
+                    ]
+                }
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": {
+                    "$divide": [
+                        {"$const": 1},
+                        {
+                            "$add": [
+                                {"$const": 1},
+                                {
+                                    "$exp": [
+                                        {
+                                            "$multiply": [
+                                                {"$const": -1},
+                                                {"$meta": "score"}
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeMinMaxScalerNormalization) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: "$myScore",
+            normalizeFunction: "minMaxScaler"
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": "$myScore"
+            }
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": {
+                    "docs": "$$ROOT"
+                }
+            }
+        },
+        {
+            "$_internalSetWindowFields": {
+                "sortBy": {"internal_min_max_scaler_normalization_score": -1},
+                "output": {
+                    "internal_min_max_scaler_normalization_score": {
+                        "$minMaxScaler": {
+                            "input": {"$meta": "score"},
+                            "min": 0,
+                            "max": 1
+                        },
+                        "window": {
+                            "documents": [
+                                "unbounded",
+                                "unbounded"
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": "$internal_min_max_scaler_normalization_score"
+            }
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": "$docs"
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeMinMaxScalerNormalizationWeighted) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: "$myScore",
+            normalizeFunction: "minMaxScaler",
+            weight: 0.5
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": "$myScore"
+            }
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": {
+                    "docs": "$$ROOT"
+                }
+            }
+        },
+        {
+            "$_internalSetWindowFields": {
+                "sortBy": {"internal_min_max_scaler_normalization_score": -1},
+                "output": {
+                    "internal_min_max_scaler_normalization_score": {
+                        "$minMaxScaler": {
+                            "input": {"$meta": "score"},
+                            "min": 0,
+                            "max": 1
+                        },
+                        "window": {
+                            "documents": [
+                                "unbounded",
+                                "unbounded"
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": "$internal_min_max_scaler_normalization_score"
+            }
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": "$docs"
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": {
+                    "$multiply": [
+                        {"$meta": "score"},
+                        {"$const": 0.5}
+                    ]
+                }
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+TEST_F(DocumentSourceScoreTest, RepresentativeQueryShapeExpressionMinMaxScalerNormalization) {
+    auto spec = fromjson(R"({
+        $score: {
+            score: {$multiply: ["$myScore", "$myScore"]},
+            normalizeFunction: "minMaxScaler"
+        }
+    })");
+
+    auto expected = R"({
+        "expectedStages": [
+        {
+            "$setMetadata": {
+                "score": {
+                    "$multiply": [
+                        "$myScore",
+                        "$myScore"
+                    ]
+                }
+            }
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": {
+                    "docs": "$$ROOT"
+                }
+            }
+        },
+        {
+            "$_internalSetWindowFields": {
+                "sortBy": {"internal_min_max_scaler_normalization_score": -1},
+                "output": {
+                    "internal_min_max_scaler_normalization_score": {
+                        "$minMaxScaler": {
+                            "input": {"$meta": "score"},
+                            "min": 0,
+                            "max": 1
+                        },
+                        "window": {
+                            "documents": [
+                                "unbounded",
+                                "unbounded"
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "$setMetadata": {
+                "score": "$internal_min_max_scaler_normalization_score"
+            }
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": "$docs"
+            }
+        }
+    ]})";
+
+    runRepresentativeQueryShapeTest(getExpCtx(), spec, expected);
+}
+
+void runQueryShapeDebugStringTest(boost::intrusive_ptr<ExpressionContextForTest> expCtx,
+                                  const BSONObj& querySpec,
+                                  const std::vector<std::string>& expectedDesugarOutputs) {
+    SerializationOptions opts = SerializationOptions::kDebugShapeAndMarkIdentifiers_FOR_TEST;
+
+    const auto desugaredList =
+        DocumentSourceScore::createFromBson(querySpec.firstElement(), expCtx);
+    std::vector<Value> output;
+    for (auto it = desugaredList.begin(); it != desugaredList.end(); it++) {
+        boost::intrusive_ptr<DocumentSource> ds = *it;
+        ds->serializeToArray(output, opts);
     }
 
-    {
-        BSONObj spec = fromjson(R"({
-            $score: {
-                score: {$divide: ["$myScore", "$otherScore"]},
-                normalizeFunction: "sigmoid",
-                weight: 1
+    ASSERT_EQ(output.size(), expectedDesugarOutputs.size());
+
+    for (size_t i = 0; i < expectedDesugarOutputs.size(); i++) {
+        ASSERT_BSONOBJ_EQ_AUTO(expectedDesugarOutputs[i], output[i].getDocument().toBson());
+    }
+}
+
+TEST_F(DocumentSourceScoreTest, QueryShapeDebugStringNoNormalization) {
+    BSONObj spec = fromjson("{$score: {score: \"$myScore\", normalizeFunction: \"none\"}}");
+    std::vector<std::string> expectedValues = {
+        R"({
+            $setMetadata: {
+                score: "$HASH<myScore>"
             }
-        })");
-        auto score = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
-        std::vector<Value> output;
-        score->serializeToArray(output, opts);
-        ASSERT_EQ(output.size(), 1);
-        ASSERT_BSONOBJ_EQ_AUTO(
-            R"({
+        })",
+    };
+
+    runQueryShapeDebugStringTest(getExpCtx(), spec, expectedValues);
+}
+
+TEST_F(DocumentSourceScoreTest, QueryShapeDebugStringSigmoidNormalizationWeighted) {
+    BSONObj spec = fromjson(R"({
+        $score: {
+            score: "$myScore",
+            normalizeFunction: "sigmoid",
+            weight: 0.5
+        }
+    })");
+
+    std::vector<std::string> expectedValues = {
+        R"({
+            $setMetadata: {
+                score: "$HASH<myScore>"
+            }
+        })",
+        R"({
             "$setMetadata": {
                 "score": {
                     "$divide": [
@@ -577,12 +836,7 @@ TEST_F(DocumentSourceScoreTest, QueryShapeDebugString) {
                                         {
                                             "$multiply": [
                                                 "?number",
-                                                {
-                                                    "$divide": [
-                                                        "$HASH<myScore>",
-                                                        "$HASH<otherScore>"
-                                                    ]
-                                                }
+                                                {"$meta": "score"}
                                             ]
                                         }
                                     ]
@@ -593,106 +847,189 @@ TEST_F(DocumentSourceScoreTest, QueryShapeDebugString) {
                 }
             }
         })",
-            output.front().getDocument().toBson());
-    }
-}
-
-TEST_F(DocumentSourceScoreTest, RepresentativeQueryShape) {
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagSearchHybridScoringFull",
-                                                               true);
-
-    SerializationOptions opts = SerializationOptions::kRepresentativeQueryShapeSerializeOptions;
-
-    {
-        BSONObj spec = fromjson("{$score: {score: \"$myScore\", normalizeFunction: \"none\"}}");
-        auto score = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
-        std::vector<Value> output;
-        score->serializeToArray(output, opts);
-        ASSERT_EQ(output.size(), 1);
-        ASSERT_BSONOBJ_EQ_AUTO(
-            R"({
-                $setMetadata: {
-                    score: "$myScore"
-                }
-            })",
-            output.front().getDocument().toBson());
-    }
-
-    {
-        BSONObj spec = fromjson(R"({
-            $score: {
-                score: "$myScore",
-                normalizeFunction: "sigmoid",
-                weight: 0.5
-            }
-        })");
-        auto score = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
-        std::vector<Value> output;
-        score->serializeToArray(output, opts);
-        ASSERT_EQ(output.size(), 1);
-        ASSERT_BSONOBJ_EQ_AUTO(
-            R"({
-            "$setMetadata": {
+        R"({
+            $setMetadata: {
                 "score": {
                     "$multiply": [
-                        {
+                        {"$meta": "score"},
+                        "?number"
+                    ]
+                }
+            }
+        })",
+    };
+
+    runQueryShapeDebugStringTest(getExpCtx(), spec, expectedValues);
+}
+
+TEST_F(DocumentSourceScoreTest, QueryShapeDebugStringExpressionMinMaxScalerNormalizationWeighted) {
+    BSONObj spec = fromjson(R"({
+        $score: {
+            score: {$multiply: ["$myScore", 2]},
+            normalizeFunction: "minMaxScaler",
+            weight: .75
+        }
+    })");
+
+
+    std::vector<std::string> expectedValues = {
+        R"({
+                "$setMetadata": {
+                    "score": {
+                        "$multiply": [
+                            "$HASH<myScore>",
+                            "?number"
+                        ]
+                    }
+                }
+            })",
+        R"({
+                "$replaceRoot": {
+                    "newRoot": {
+                        "HASH<docs>": "$$ROOT"
+                    }
+                }
+            })",
+        R"({
+                "$_internalSetWindowFields": {
+                    "sortBy": {"HASH<internal_min_max_scaler_normalization_score>": -1},
+                    "output": {
+                        "HASH<internal_min_max_scaler_normalization_score>": {
+                            "$minMaxScaler": {
+                                "input": {"$meta": "score"},
+                                "min": 0,
+                                "max": 1
+                            },
+                            "window": {
+                                "documents": [
+                                    "unbounded",
+                                    "unbounded"
+                                ]
+                            }
+                        }
+                    }
+                }
+            })",
+        R"({
+                "$setMetadata": {
+                    "score": "$HASH<internal_min_max_scaler_normalization_score>"
+                }
+            })",
+        R"({
+                "$replaceRoot": {
+                    "newRoot": "$HASH<docs>"
+                }
+            })",
+        R"({
+                "$setMetadata": {
+                    "score": {
+                        "$multiply": [
+                            {"$meta": "score"},
+                            "?number"
+                        ]
+                    }
+                }
+            })"};
+
+    runQueryShapeDebugStringTest(getExpCtx(), spec, expectedValues);
+}
+
+TEST_F(DocumentSourceScoreTest, ScoreDetailsDesugaring) {
+    {
+        BSONObj spec = fromjson(
+            "{$score: {score: \"$myScore\", normalizeFunction: \"none\", scoreDetails: true}}");
+        const auto desugaredList =
+            DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+        ASSERT_EQ(desugaredList.size(), 2);
+        const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+        BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+        ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+            R"({
+            "expectedStages": [
+                {
+                    "$setMetadata": {
+                        "score": "$myScore"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the score calculated from multiplying a weight in the range [0,1] with either a normalized or nonnormalized value:"
+                            },
+                            "rawScore": "$myScore",
+                            "normalization": {
+                                "$const": "none"
+                            },
+                            "weight": {
+                                "$const": 1
+                            },
+                            "expression": {
+                                "$const": "{ string: '$myScore' }"
+                            },
+                            "details": []
+                        }
+                    }
+                }
+            ]
+        })",
+            asOneObj);
+    }
+    {
+        BSONObj spec = fromjson(
+            R"({
+                $score: {
+                    score: {
+                        $add: ['$myScore', '$otherScore']
+                    },
+                    normalizeFunction: 'sigmoid',
+                    weight: 0.5,
+                    scoreDetails: true
+                }
+            })");
+        const auto desugaredList =
+            DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+        ASSERT_EQ(desugaredList.size(), 4);
+        const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+        BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+        ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+            R"({
+            "expectedStages": [
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$add": [
+                                "$myScore",
+                                "$otherScore"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
                             "$divide": [
-                                1,
+                                {
+                                    "$const": 1
+                                },
                                 {
                                     "$add": [
-                                        1,
+                                        {
+                                            "$const": 1
+                                        },
                                         {
                                             "$exp": [
                                                 {
                                                     "$multiply": [
-                                                        1,
-                                                        "$myScore"
-                                                    ]
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        1
-                    ]
-                }
-            }
-        })",
-            output.front().getDocument().toBson());
-    }
-
-    {
-        BSONObj spec = fromjson(R"({
-            $score: {
-                score: {$divide: ["$myScore", 0.5]},
-                normalizeFunction: "sigmoid",
-                weight: 1
-            }
-        })");
-        auto score = DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
-        std::vector<Value> output;
-        score->serializeToArray(output, opts);
-        ASSERT_EQ(output.size(), 1);
-        ASSERT_BSONOBJ_EQ_AUTO(
-            R"({
-            "$setMetadata": {
-                "score": {
-                    "$divide": [
-                        1,
-                        {
-                            "$add": [
-                                1,
-                                {
-                                    "$exp": [
-                                        {
-                                            "$multiply": [
-                                                1,
-                                                {
-                                                    "$divide": [
-                                                        "$myScore",
-                                                        1
+                                                        {
+                                                            "$const": -1
+                                                        },
+                                                        {
+                                                            "$meta": "score"
+                                                        }
                                                     ]
                                                 }
                                             ]
@@ -701,15 +1038,154 @@ TEST_F(DocumentSourceScoreTest, RepresentativeQueryShape) {
                                 }
                             ]
                         }
-                    ]
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 0.5
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the score calculated from multiplying a weight in the range [0,1] with either a normalized or nonnormalized value:"
+                            },
+                            "rawScore": {
+                                "$add": [
+                                    "$myScore",
+                                    "$otherScore"
+                                ]
+                            },
+                            "normalization": {
+                                "$const": "sigmoid"
+                            },
+                            "weight": {
+                                "$const": 0.5
+                            },
+                            "expression": {
+                                "$const": "{ string: { $add: [ '$myScore', '$otherScore' ] } }"
+                            },
+                            "details": []
+                        }
+                    }
                 }
-            }
+            ]
         })",
-            output.front().getDocument().toBson());
+            asOneObj);
+    }
+    {
+        BSONObj spec = fromjson(
+            "{$score: {score: \"$myScore\", normalizeFunction: \"minMaxScaler\", weight: 0.5, "
+            "scoreDetails: true}}");
+        const auto desugaredList =
+            DocumentSourceScore::createFromBson(spec.firstElement(), getExpCtx());
+        ASSERT_EQ(desugaredList.size(), 7);
+        const auto pipeline = Pipeline::create(desugaredList, getExpCtx());
+        BSONObj asOneObj = BSON("expectedStages" << pipeline->serializeToBson());
+        ASSERT_BSONOBJ_EQ_AUTO(  // NOLINT
+            R"({
+            "expectedStages": [
+                {
+                    "$setMetadata": {
+                        "score": "$myScore"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": {
+                            "docs": "$$ROOT"
+                        }
+                    }
+                },
+                {
+                    "$_internalSetWindowFields": {
+                        "sortBy": {
+                            "internal_min_max_scaler_normalization_score": -1
+                        },
+                        "output": {
+                            "internal_min_max_scaler_normalization_score": {
+                                "$minMaxScaler": {
+                                    "input": {
+                                        "$meta": "score"
+                                    },
+                                    "min": 0,
+                                    "max": 1
+                                },
+                                "window": {
+                                    "documents": [
+                                        "unbounded",
+                                        "unbounded"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": "$internal_min_max_scaler_normalization_score"
+                    }
+                },
+                {
+                    "$replaceRoot": {
+                        "newRoot": "$docs"
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "score": {
+                            "$multiply": [
+                                {
+                                    "$meta": "score"
+                                },
+                                {
+                                    "$const": 0.5
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$setMetadata": {
+                        "scoreDetails": {
+                            "value": {
+                                "$meta": "score"
+                            },
+                            "description": {
+                                "$const": "the score calculated from multiplying a weight in the range [0,1] with either a normalized or nonnormalized value:"
+                            },
+                            "rawScore": "$myScore",
+                            "normalization": {
+                                "$const": "minMaxScaler"
+                            },
+                            "weight": {
+                                "$const": 0.5
+                            },
+                            "expression": {
+                                "$const": "{ string: '$myScore' }"
+                            },
+                            "details": []
+                        }
+                    }
+                }
+            ]
+        })",
+            asOneObj);
     }
 }
-
-// TODO SERVER-94600: Add minMaxScaler Testcases
 
 }  // namespace
 }  // namespace mongo

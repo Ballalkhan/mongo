@@ -63,6 +63,7 @@
 #include "mongo/db/s/database_sharding_state.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/scoped_collection_metadata.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session/logical_session_id_gen.h"
 #include "mongo/db/storage/capped_snapshots.h"
@@ -72,7 +73,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/message.h"
 #include "mongo/s/shard_version.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
@@ -677,7 +677,7 @@ void acquireConsistentCatalogAndSnapshotUnsafe(OperationContext* opCtx,
         // Check that the sharding database version matches our read.
         if (dbName) {
             // Check that the sharding database version matches our read.
-            DatabaseShardingState::assertMatchingDbVersion(opCtx, *dbName);
+            DatabaseShardingState::acquire(opCtx, *dbName)->checkDbVersionOrThrow(opCtx);
         }
 
         // We must open a storage snapshot consistent with the fetched in-memory Catalog instance.
@@ -869,7 +869,7 @@ AutoGetCollectionForReadLockFree::AutoGetCollectionForReadLockFree(
         (!shard_role_details::getRecoveryUnit(opCtx)->isActive() || _isLockFreeReadSubOperation));
 
     // Pre-snapshot shard version checks.
-    DatabaseShardingState::assertMatchingDbVersion(opCtx, nsOrUUID.dbName());
+    DatabaseShardingState::acquire(opCtx, nsOrUUID.dbName())->checkDbVersionOrThrow(opCtx);
     if (nsOrUUID.isNamespaceString()) {
         CollectionShardingState::acquire(opCtx, nsOrUUID.nss())->checkShardVersionOrThrow(opCtx);
     }

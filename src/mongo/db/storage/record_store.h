@@ -62,13 +62,7 @@
 
 namespace mongo {
 
-class Collection;
-class CollectionPtr;
-class CollectionTruncateMarkers;
-class MAdvise;
 class OperationContext;
-class OplogData;
-class RecordStore;
 class RecoveryUnit;
 class ValidateResults;
 
@@ -312,12 +306,70 @@ private:
  * an OperationContext may throw a WriteConflictException.
  *
  * This class must be thread-safe. In addition, for storage engines implementing the KVEngine some
- * methods must be thread safe, see DurableCatalog.
+ * methods must be thread safe, see MDBCatalog.
  */
 class RecordStore {
 public:
     class Capped;
     class Oplog;
+
+    /**
+     * Options for generating a new RecordStore. Each RecordStore subclass is responsible for
+     * parsing its applicable fields - not all fields apply to every RecordStore implementation.
+     */
+    struct Options {
+        /**
+         * The KeyFormat for RecordIds in the RecordStore.
+         */
+        KeyFormat keyFormat{KeyFormat::Long};
+
+        /**
+         * True if the RecordStore is for a capped collection.
+         */
+        bool isCapped{false};
+
+        /*
+         * True if the RecordStore is for the oplog collection.
+         */
+        bool isOplog{false};
+
+        /**
+         * The initial maximum size an Oplog's RecordStore should reach. Non-zero value is only
+         * valid when 'isOplog' is true.
+         */
+        long long oplogMaxSize{0};
+
+        /**
+         * Whether or not the RecordStore allows allows writes to overwrite existing records with
+         * the same RecordId.
+         */
+        bool allowOverwrite{true};
+
+        /**
+         * True if updates through the RecordStore must force updates to the full document.
+         */
+        bool forceUpdateWithFullDocument{false};
+
+        /**
+         * When not none, defines a block compression algorithm to use in liu of the default for
+         * RecordStores which support block compression. Otherwise, the RecordStore should utilize
+         * the default block compressor.
+         */
+        boost::optional<std::string> customBlockCompressor;
+
+        /**
+         * Empty by default. Holds collection-specific storage engine configuration options. For
+         * example, the 'storageEngine' options passed into `db.createCollection()`. Expected to be
+         * mirror the 'CollectionOptions::storageEngine' format { storageEngine: { <storage engine
+         * name> : { configString: "<option>=<setting>,..."} } }.
+         *
+         * If fields in the 'configString' conflict with fields set either by global defaults or
+         * other members of the 'RecordStore::Options' struct, RecordStores should prefer values
+         * from the 'configString'. However, this is difficult to guarantee across RecordStores, and
+         * any concerns should be validated through explicit testing.
+         */
+        BSONObj storageEngineCollectionOptions;
+    };
 
     virtual ~RecordStore() {}
 
@@ -571,6 +623,12 @@ public:
 
 class RecordStore::Capped {
 public:
+    struct TruncateAfterResult {
+        int64_t recordsRemoved = 0;
+        int64_t bytesRemoved = 0;
+        RecordId firstRemovedId;
+    };
+
     /**
      * Get a pointer to a capped insert notifier object. The caller can wait on this object
      * until it is notified of a new insert into the capped collection.
@@ -599,28 +657,19 @@ public:
      * function.  An assertion will be thrown if that is attempted.
      * @param inclusive - Truncate 'end' as well iff true
      */
-    using AboutToDeleteRecordCallback =
-        std::function<void(OperationContext*, const RecordId&, RecordData)>;
-    virtual void truncateAfter(OperationContext*,
-                               const RecordId&,
-                               bool inclusive,
-                               const AboutToDeleteRecordCallback&) = 0;
+    virtual TruncateAfterResult truncateAfter(OperationContext*,
+                                              const RecordId&,
+                                              bool inclusive) = 0;
 };
 
 class RecordStore::Oplog {
 public:
     /**
-     * Storage engines can manage oplog truncation internally as opposed to having higher layers
-     * manage it for them.
-     */
-    virtual bool selfManagedTruncation() const = 0;
-
-    /**
      * Storage engines can choose whether to support changing the oplog size online.
      */
     virtual Status updateSize(long long size) = 0;
 
-    virtual const OplogData* getOplogData() const = 0;
+    virtual int64_t getMaxSize() const = 0;
 
     /**
      * Returns a new cursor on the oplog, ignoring any visibility semantics specific to forward
@@ -646,14 +695,6 @@ public:
      * Unsupported RecordStores return the OplogOperationUnsupported error code.
      */
     virtual StatusWith<Timestamp> getEarliestTimestamp(RecoveryUnit&) = 0;
-
-    /**
-     * Returns a shared reference to the oplog truncate markers to allow the caller to wait
-     * for a deletion request.
-     * This should only be called if StorageEngine::supportsOplogTruncateMarkers() is true.
-     * Storage engines supporting oplog truncate markers must implement this function.
-     */
-    virtual std::shared_ptr<CollectionTruncateMarkers> getCollectionTruncateMarkers() = 0;
 };
 
 }  // namespace mongo

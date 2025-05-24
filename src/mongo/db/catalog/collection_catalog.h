@@ -79,7 +79,7 @@ namespace catalog {
 class CatalogControlUtils;
 
 /**
- * Must be called after DurableCatalog is loaded.
+ * Must be called after MDBCatalog is loaded.
  */
 void initializeCollectionCatalog(OperationContext* opCtx,
                                  StorageEngine* engine,
@@ -173,16 +173,14 @@ public:
      * Perform a write to the catalog using copy-on-write. A catalog previously returned by get()
      * will not be modified.
      *
-     * This call will block until the modified catalog has been committed. Concurrent writes are
-     * batched together and will thus block each other. It is important to not perform blocking
+     * This call will block until the modified catalog has been committed. Concurrent writes for a
+     * single ServiceContext will block each other. It is important to not perform blocking
      * operations such as acquiring locks or waiting for I/O in the write job as that would also
      * block other writers.
      *
      * The provided job is allowed to throw which will be propagated through this call.
-     *
-     * The write job may execute on a different thread.
      */
-    using CatalogWriteFn = std::function<void(CollectionCatalog&)>;
+    using CatalogWriteFn = function_ref<void(CollectionCatalog&)>;
     static void write(ServiceContext* svcCtx, CatalogWriteFn job);
     static void write(OperationContext* opCtx, CatalogWriteFn job);
 
@@ -783,7 +781,7 @@ private:
     /**
      * Searches for a catalog entry at a point-in-time.
      */
-    boost::optional<DurableCatalogEntry> _fetchPITCatalogEntry(
+    boost::optional<durable_catalog::CatalogEntry> _fetchPITCatalogEntry(
         OperationContext* opCtx,
         const NamespaceStringOrUUID& nssOrUUID,
         boost::optional<Timestamp> readTimestamp) const;
@@ -796,7 +794,7 @@ private:
         OperationContext* opCtx,
         const std::shared_ptr<const Collection>& latestCollection,
         boost::optional<Timestamp> readTimestamp,
-        const DurableCatalogEntry& catalogEntry) const;
+        const durable_catalog::CatalogEntry& catalogEntry) const;
 
     /**
      * Creates a Collection instance from scratch if the ident has not yet been dropped.
@@ -804,7 +802,7 @@ private:
     std::shared_ptr<Collection> _createNewPITCollection(
         OperationContext* opCtx,
         boost::optional<Timestamp> readTimestamp,
-        const DurableCatalogEntry& catalogEntry) const;
+        const durable_catalog::CatalogEntry& catalogEntry) const;
 
     /**
      * Retrieves the views for a given database, including any uncommitted changes for this
@@ -885,7 +883,8 @@ private:
      * When present, indicates that the catalog is in closed state, and contains a map from UUID
      * to pre-close NSS. See also onCloseCatalog.
      */
-    boost::optional<mongo::stdx::unordered_map<UUID, NamespaceString, UUID::Hash>> _shadowCatalog;
+    std::shared_ptr<const mongo::stdx::unordered_map<UUID, NamespaceString, UUID::Hash>>
+        _shadowCatalog;
 
     using CollectionCatalogMap =
         immutable::unordered_map<UUID, std::shared_ptr<Collection>, UUID::Hash>;

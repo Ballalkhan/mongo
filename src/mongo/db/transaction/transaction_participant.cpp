@@ -73,7 +73,6 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/database_name.h"
-#include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/internal_transactions_feature_flag_gen.h"
@@ -98,7 +97,7 @@
 #include "mongo/db/session/logical_session_id_helpers.h"
 #include "mongo/db/session/session_catalog_mongod.h"
 #include "mongo/db/shard_role.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
+#include "mongo/db/storage/exceptions.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot.h"
@@ -272,9 +271,6 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
             std::exchange(repl::ReadConcernArgs::get(opCtx), repl::ReadConcernArgs());
         ON_BLOCK_EXIT([&] { repl::ReadConcernArgs::get(opCtx) = std::move(originalReadConcern); });
 
-        AutoGetCollectionForRead autoRead(opCtx,
-                                          NamespaceString::kSessionTransactionsTableNamespace);
-
         BSONObjBuilder bob;
         bob.append("_id", lsid.toBSON());
         auto id = bob.obj();
@@ -339,7 +335,8 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
 
     // Restore the current timestamp read source after fetching transaction history, which may
     // change our ReadSource.
-    ReadSourceScope readSourceScope(opCtx, RecoveryUnit::ReadSource::kNoTimestamp);
+    ReadSourceScope readSourceScope(
+        opCtx, RecoveryUnit::ReadSource::kNoTimestamp, boost::none, true /* waitForOplog */);
     auto originalReadConcern =
         std::exchange(repl::ReadConcernArgs::get(opCtx), repl::ReadConcernArgs());
     ON_BLOCK_EXIT([&] { repl::ReadConcernArgs::get(opCtx) = std::move(originalReadConcern); });
@@ -660,17 +657,21 @@ TransactionParticipant::getOldestActiveTimestamp(Timestamp stableTimestamp) {
                 ->setTimestampReadSource(RecoveryUnit::ReadSource::kProvided, stableTimestamp);
         }
 
-        const auto nss = NamespaceString::kSessionTransactionsTableNamespace;
         const auto deadline = Date_t::now() + Milliseconds(100);
 
-        const AutoGetCollectionForReadLockFree collectionAcquisition(
-            opCtx.get(), nss, AutoGetCollection::Options{}.deadline(deadline));
+        auto collectionAcquisition = acquireCollectionMaybeLockFree(
+            opCtx.get(),
+            CollectionAcquisitionRequest(NamespaceString::kSessionTransactionsTableNamespace,
+                                         PlacementConcern{boost::none, ShardVersion::UNSHARDED()},
+                                         repl::ReadConcernArgs::get(opCtx.get()),
+                                         AcquisitionPrerequisites::kRead,
+                                         deadline));
 
-        if (!collectionAcquisition.getCollection()) {
+        if (!collectionAcquisition.exists()) {
             return boost::none;
         }
         auto exec = InternalPlanner::collectionScan(opCtx.get(),
-                                                    &collectionAcquisition.getCollection(),
+                                                    &collectionAcquisition.getCollectionPtr(),
                                                     PlanYieldPolicy::YieldPolicy::INTERRUPT_ONLY,
                                                     InternalPlanner::Direction::FORWARD);
 
@@ -3350,13 +3351,8 @@ void TransactionParticipant::Participant::onWriteOpCompletedOnPrimary(
 
     repl::UnreplicatedWritesBlock doNotReplicateWrites(opCtx);
 
-    {
-        // Do not increase consumption metrics during updating session entry, as this
-        // will cause a tenant to be billed for reading or writing on session transactions table.
-        ResourceConsumption::PauseMetricsCollectorBlock pauseMetricsCollection(opCtx);
-        updateSessionEntry(
-            opCtx, _sessionId(), sessionTxnRecord.toBSON(), sessionTxnRecord.getTxnNum());
-    }
+    updateSessionEntry(
+        opCtx, _sessionId(), sessionTxnRecord.toBSON(), sessionTxnRecord.getTxnNum());
     _registerUpdateCacheOnCommit(
         opCtx, std::move(stmtIdsWritten), sessionTxnRecord.getLastWriteOpTime());
 }
@@ -3377,13 +3373,8 @@ void TransactionParticipant::Participant::onRetryableWriteCloningCompleted(
 
     repl::UnreplicatedWritesBlock doNotReplicateWrites(opCtx);
 
-    {
-        // Do not increase consumption metrics during updating session entry, as this
-        // will cause a tenant to be billed for reading or writing on session transactions table.
-        ResourceConsumption::PauseMetricsCollectorBlock pauseMetricsCollection(opCtx);
-        updateSessionEntry(
-            opCtx, _sessionId(), sessionTxnRecord.toBSON(), sessionTxnRecord.getTxnNum());
-    }
+    updateSessionEntry(
+        opCtx, _sessionId(), sessionTxnRecord.toBSON(), sessionTxnRecord.getTxnNum());
     _registerUpdateCacheOnCommit(
         opCtx, std::move(stmtIdsWritten), sessionTxnRecord.getLastWriteOpTime());
 }
@@ -3481,6 +3472,13 @@ TransactionParticipant::Participant::checkStatementExecutedAndFetchOplogEntry(
     // Use a SideTransactionBlock since it is illegal to scan the oplog while in a write unit of
     // work.
     TransactionParticipant::SideTransactionBlock sideTxn(opCtx);
+
+    // Before opening the storage snapshot (and before scanning the oplog), wait for all
+    // earlier oplog writes to be visible. This is necessary because the transaction history
+    // iterator will not be able to abandon the storage snapshot and wait.
+    auto storageInterface = repl::StorageInterface::get(opCtx);
+    storageInterface->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+
     TransactionHistoryIterator txnIter(*stmtOpTime);
     while (txnIter.hasNext()) {
         const auto entry = txnIter.next(opCtx);

@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mongo/db/matcher/expression.h"
+#include "mongo/db/query/index_entry.h"
 
 namespace mongo {
 /**
@@ -44,8 +45,13 @@ enum HashValuesOrParams {
     kHashIndexTags = 1 << 3,
 };
 
-struct MatchExpressionHashParams {
+struct MatchExpression::HashParam {
     const HashValuesOrParams hashValuesOrParams;
+    // Required if 'kHashIndexTags' is set. Index tags refer to indexes by their positions in this
+    // list. However we don't want index tags' hashes to change based on this property. For
+    // instance, we don't prune indexes when planning from cache, which could cause the relevant
+    // indexes' positions to be different. Hence we hash the index identifiers instead.
+    const std::vector<IndexEntry>* const indexes = nullptr;
     // 'maxNumberOfInElementsToHash' is the maximum number of equalities or regexes to hash to avoid
     // performance issues related to hashing of large '$in's.
     const size_t maxNumberOfInElementsToHash = 20;
@@ -56,7 +62,7 @@ struct MatchExpressionHashParams {
  * The function does not support $jsonSchema and will tassert() if provided an input that contains
  * any $jsonSchema-related nodes.
  */
-size_t calculateHash(const MatchExpression& expr, const MatchExpressionHashParams& params);
+size_t calculateHash(const MatchExpression& expr, const MatchExpression::HashParam& param);
 
 /**
  * MatchExpression's hash functor implementation compatible with unordered containers. Designed to
@@ -64,8 +70,8 @@ size_t calculateHash(const MatchExpression& expr, const MatchExpressionHashParam
  * will tassert() if provided an input that contains any $jsonSchema-related nodes.
  */
 struct MatchExpressionHasher {
-    explicit MatchExpressionHasher(MatchExpressionHashParams params =
-                                       MatchExpressionHashParams{HashValuesOrParams::kHashValues})
+    explicit MatchExpressionHasher(MatchExpression::HashParam params =
+                                       MatchExpression::HashParam{HashValuesOrParams::kHashValues})
         : _params(std::move(params)) {}
 
     size_t operator()(const MatchExpression* expr) const {
@@ -73,7 +79,7 @@ struct MatchExpressionHasher {
     }
 
 private:
-    const MatchExpressionHashParams _params;
+    const MatchExpression::HashParam _params;
 };
 
 /**

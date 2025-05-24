@@ -2,6 +2,8 @@
  * Utility class for testing query settings.
  */
 import {getCommandName, getExplainCommand} from "jstests/libs/cmd_object_utils.js";
+import {DiscoverTopology} from "jstests/libs/discover_topology.js";
+import {configureFailPoint} from "jstests/libs/fail_point_util.js";
 import {
     getAggPlanStages,
     getEngine,
@@ -139,16 +141,15 @@ export class QuerySettingsUtils {
             expectedQueryShapeConfigurations.map(config => {
                 return {...config, settings: this.wrapIndexHintsIntoArrayIfNeeded(config.settings)};
             });
-        assert.soon(
+        assert.soonNoExcept(
             () => {
-                let currentQueryShapeConfigurationWo = this.getQuerySettings();
-                currentQueryShapeConfigurationWo.sort(bsonWoCompare);
-                rewrittenExpectedQueryShapeConfigurations.sort(bsonWoCompare);
-                return bsonWoCompare(currentQueryShapeConfigurationWo,
-                                     rewrittenExpectedQueryShapeConfigurations) == 0;
+                assert.sameMembers(this.getQuerySettings(),
+                                   rewrittenExpectedQueryShapeConfigurations);
+                return true;
             },
-            "current query settings = " + tojson(this.getQuerySettings()) +
-                ", expected query settings = " + tojson(rewrittenExpectedQueryShapeConfigurations));
+            () => "current query settings = " + toJsonForLog(this.getQuerySettings()) +
+                ", expected query settings = " +
+                toJsonForLog(rewrittenExpectedQueryShapeConfigurations));
 
         if (shouldRunExplain) {
             const settingsArray = this.getQuerySettings({showQueryShapeHash: true});
@@ -199,23 +200,58 @@ export class QuerySettingsUtils {
      * 'runTest' anonymous function which will be executed once the provided query settings have
      * been propagated throughout the cluster.
      */
-    withQuerySettings(representativeQuery, settings, runTest) {
+    withQuerySettings(setQuerySettings, settings, runTest) {
         let queryShapeHash = undefined;
+        let representativeQuery = undefined;
         try {
-            const setQuerySettingsCmd = {setQuerySettings: representativeQuery, settings: settings};
-            queryShapeHash =
-                assert.commandWorked(this._db.adminCommand(setQuerySettingsCmd)).queryShapeHash;
-            assert.soon(() => (this.getQuerySettings({filter: {queryShapeHash}}).length === 1));
-            for (const hook of this._onSetQuerySettingsHooks) {
-                hook();
+            const setQuerySettingsCmd = {setQuerySettings, settings};
+            const response = assert.commandWorked(this._db.adminCommand(setQuerySettingsCmd));
+            queryShapeHash = response.queryShapeHash;
+            representativeQuery = response.representativeQuery;
+
+            // Assert that the 'expectedQueryShapeConfiguration' is present in the system.
+            const expectedQueryShapeConfiguration = {queryShapeHash, settings: response.settings};
+            if (representativeQuery) {
+                expectedQueryShapeConfiguration.representativeQuery = representativeQuery;
             }
+            assert.soonNoExcept(() => {
+                const settings =
+                    this.getQuerySettings({filter: {queryShapeHash}, showQueryShapeHash: true});
+                assert.sameMembers(settings, [expectedQueryShapeConfiguration]);
+                return true;
+            });
+
+            this._onSetQuerySettingsHooks.forEach(hook => hook());
             return runTest();
         } finally {
             if (queryShapeHash) {
-                const removeQuerySettingsCmd = {removeQuerySettings: representativeQuery};
+                const removeQuerySettingsCmd = {
+                    removeQuerySettings: representativeQuery ?? queryShapeHash
+                };
                 assert.commandWorked(this._db.adminCommand(removeQuerySettingsCmd));
                 assert.soon(() => (this.getQuerySettings({filter: {queryShapeHash}}).length === 0));
             }
+        }
+    }
+
+    withFailpoint(failPointName, data, fn) {
+        // 'coordinator' corresponds to replset primary in replica set or configvr primary in
+        // sharded clusters.
+        const coordinator = (function(db) {
+            const topology = DiscoverTopology.findConnectedNodes(db.getMongo());
+            const hasMongosThatForwardsQuerySettingsCmdsToConfigsvr =
+                MongoRunner.compareBinVersions(jsTestOptions().mongosBinVersion, "8.2") >= 0;
+            if (topology.configsvr && hasMongosThatForwardsQuerySettingsCmdsToConfigsvr) {
+                return new Mongo(topology.configsvr.nodes[0]);
+            }
+            return db.getMongo();
+        })(this._db);
+
+        const failpoint = configureFailPoint(coordinator, failPointName, data);
+        try {
+            return fn(failpoint, coordinator.port);
+        } finally {
+            failpoint.off();
         }
     }
 

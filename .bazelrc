@@ -38,8 +38,11 @@ common --experimental_cc_shared_library
 # Reuse sandboxes to save sandbox execution and deletion times.
 common --experimental_reuse_sandbox_directories
 
-# Enable Build without the Bytes
-common --remote_download_outputs=toplevel
+# Seeing as we link locally, you'll end up with 99% of the files locally anyways.
+# Using remote download all save some build time because it will immediately download an object
+# file when it is available, where toplevel will wait until the local linking job needs it
+# before starting the download.
+common --remote_download_outputs=all
 
 # Files we always want to download for debugging and error checking
 common --remote_download_regex=.*\.(dwo|h|cpp)$
@@ -49,6 +52,13 @@ common --cache_test_results=no
 
 # Stream the test output so users can see the test progression.
 common --test_output=streamed
+
+# when using remote asset api, fallback to the direct urls to download
+common --experimental_remote_downloader_local_fallback
+
+# Build only what is necessary to run the *_test and test_suite rules that were
+# not filtered due to their size, timeout, tag, or language.
+test --build_tests_only
 
 common:macos --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
 
@@ -65,7 +75,9 @@ common --strategy=StripDebuginfo=local
 common --strategy=ExtractDebuginfo=local
 common --strategy=TestRunner=local
 common --strategy=CoverageReport=local
-common --modify_execution_info=^(TestRunner|CppLink|CppArchive|SolibSymlink|ExtractDebuginfo|StripDebuginfo)$=+no-remote-cache
+common --strategy=CcGenerateIntermediateDwp=local
+common --strategy=CcGenerateDwp=local
+common --modify_execution_info=^(TestRunner|CppLink|CppArchive|SolibSymlink|ExtractDebuginfo|StripDebuginfo|CcGenerateIntermediateDwp|CcGenerateDwp)$=+no-remote-cache
 
 # Aliases for config flags
 common --flag_alias=linkstatic=//bazel/config:linkstatic
@@ -88,7 +100,6 @@ common --flag_alias=use_wiredtiger=//bazel/config:use_wiredtiger
 common --flag_alias=use_glibcxx_debug=//bazel/config:use_glibcxx_debug
 common --flag_alias=use_tracing_profiler=//bazel/config:use_tracing_profiler
 common --flag_alias=build_otel=//bazel/config:build_otel
-common --flag_alias=use_libcxx=//bazel/config:use_libcxx
 common --flag_alias=detect_odr_violations=//bazel/config:detect_odr_violations
 common --flag_alias=shared_archive=//bazel/config:shared_archive
 common --flag_alias=skip_archive=//bazel/config:skip_archive
@@ -123,6 +134,7 @@ common --flag_alias=ubsan=//bazel/config:ubsan
 common --flag_alias=dbg_level=//bazel/config:dbg_level
 common --flag_alias=mongo_toolchain_version=//bazel/config:mongo_toolchain_version
 common --flag_alias=simple_build_id=//bazel/config:simple_build_id
+common --flag_alias=create_dwp=//bazel/config:create_dwp
 
 #############################################################################################################################
 # BUILD 'PROFILES' - this is the area to set up configurations of flags to be used by developers.
@@ -162,6 +174,7 @@ common --//bazel/config:dbg_level=1
 common --//bazel/config:debug_symbols=True
 common --//bazel/config:separate_debug=False
 common --//bazel/config:compiler_type=clang
+common --//bazel/config:linker=mold
 common --//bazel/config:linkstatic=True
 common --//bazel/config:build_enterprise=True
 common --//bazel/config:skip_archive=True
@@ -187,6 +200,7 @@ common:fastbuild --//bazel/config:dbg_level=1
 common:fastbuild --//bazel/config:debug_symbols=True
 common:fastbuild --//bazel/config:separate_debug=False
 common:fastbuild --//bazel/config:compiler_type=clang
+common:fastbuild --//bazel/config:linker=mold
 common:fastbuild --//bazel/config:linkstatic=True
 common:fastbuild --//bazel/config:build_enterprise=True
 common:fastbuild --//bazel/config:skip_archive=True
@@ -209,6 +223,7 @@ common:dbg --//bazel/config:dbg_level=2
 common:dbg --//bazel/config:debug_symbols=True
 common:dbg --//bazel/config:separate_debug=False
 common:dbg --//bazel/config:compiler_type=clang
+common:dbg --//bazel/config:linker=auto
 common:dbg --//bazel/config:linkstatic=True
 common:dbg --//bazel/config:build_enterprise=True
 common:dbg --//bazel/config:skip_archive=True
@@ -252,6 +267,7 @@ common:opt --//bazel/config:dbg_level=2
 common:opt --//bazel/config:debug_symbols=True
 common:opt --//bazel/config:separate_debug=False
 common:opt --//bazel/config:compiler_type=gcc
+common:opt --//bazel/config:linker=auto
 common:opt --//bazel/config:linkstatic=True
 common:opt --//bazel/config:build_enterprise=True
 common:opt --//bazel/config:skip_archive=True
@@ -267,6 +283,7 @@ common:evg --config=opt
 common:evg --//bazel/config:opt=auto
 common:evg --//bazel/config:separate_debug=True
 common:evg --fission=no
+common:evg --enable_platform_specific_config=true
 
 --config=evg_crypt
 common:evg_crypt --config=evg
@@ -325,6 +342,9 @@ coverage --fission=no
 # This is set in .bazelrc.evergreen:
 # coverage --config=no-remote-exec
 
+# code ownership configuration
+common --define codeowners_add_auto_approve_user=True
+
 # Don't detect the native toolchain on linux, only use the hermetic toolchains.
 # Opt out of this by passing --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 on the command line.
 common:linux --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
@@ -339,8 +359,10 @@ common:windows --features=-dynamic_link_msvcrt
 
 # Only use fission and debug compression on Linux
 common:windows --fission=no
+common:windows --//bazel/config:create_dwp=False
 common:windows --//bazel/config:compress_debug_compile=False
 common:macos --fission=no
+common:macos --//bazel/config:create_dwp=False
 common:macos --//bazel/config:compress_debug_compile=False
 
 # Dynamic linking on Windows (DLL generation) is currently not supported.
@@ -348,12 +370,19 @@ common:windows --//bazel/config:linkstatic=True
 
 # The only Windows compiler we support is MSVC.
 common:windows --//bazel/config:compiler_type=msvc
+common:windows --//bazel/config:linker=auto
+
+# Data dependencies don't work in bazel run or bazel test on windows without this
+startup --windows_enable_symlinks
+common:windows --enable_runfiles
+build:windows --action_env=MSYS=winsymlinks:nativestrict
+test:windows --action_env=MSYS=winsymlinks:nativestrict
 
 # Always use clang on macos
 common:macos --//bazel/config:compiler_type=clang
+common:macos --//bazel/config:linker=auto
 
 common:macos --macos_minimum_os=11.0
-common:macos --use_libcxx=True
 # TODO(SERVER-102959): Find out why tests fail when mac is not in compilation mode dbg
 common:macos -c dbg
 
@@ -379,6 +408,7 @@ common:windows --remote_executor=
 common:macos --remote_executor=
 
 # Enable remote cache (also necessary for remote build execution):
+common --experimental_remote_downloader=grpcs://sodalite.cluster.engflow.com
 common --remote_cache=grpcs://sodalite.cluster.engflow.com
 common --bes_backend=grpcs://sodalite.cluster.engflow.com
 common --bes_results_url=https://sodalite.cluster.engflow.com/invocation/
@@ -391,7 +421,7 @@ common --remote_upload_local_results=False
 # Settings specific for clang-tidy
 --config=clang-tidy
 common:clang-tidy --config=dbg
-common:clang-tidy --build_tag_filters=-third_party,-mongo-tidy-tests
+common:clang-tidy --build_tag_filters=-third_party,-mongo-tidy-tests,-third_party_debug,-mongo-tidy-tests_debug
 common:clang-tidy --//bazel/config:compiler_type=clang
 common:clang-tidy --keep_going
 common:clang-tidy --aspects @bazel_clang_tidy//clang_tidy:clang_tidy.bzl%clang_tidy_aspect
@@ -404,7 +434,7 @@ common:clang-tidy --@bazel_clang_tidy//:clang_tidy_plugin_deps=//src/mongo/tools
 
 --config=mod-scanner
 common:mod-scanner --config=dbg
-common:mod-scanner --build_tag_filters=-third_party,-mongo-tidy-tests
+common:mod-scanner --build_tag_filters=-third_party,-mongo-tidy-tests,-third_party_debug,-mongo-tidy-tests_debug
 common:mod-scanner --//bazel/config:compiler_type=clang
 common:mod-scanner --//bazel/config:mongo_toolchain_version=v5
 common:mod-scanner --output_groups=report
@@ -415,6 +445,7 @@ common:mod-scanner --remote_download_regex=.*\.mod_scanner_decls.json$
 # by passing "--config=local" on the bazel command line
 --config=local
 common:local --remote_executor=
+common:local --experimental_remote_downloader=
 common:local --remote_cache=
 common:local --bes_backend=
 common:local --bes_results_url=
@@ -433,6 +464,7 @@ common:no-remote-exec --jobs=auto
 # Disable remote execution and caching for public releases
 --config=public-release
 common:public-release --remote_executor=
+common:public-release --experimental_remote_downloader=
 common:public-release --remote_cache=
 common:public-release --bes_backend=
 common:public-release --bes_results_url=
@@ -456,11 +488,15 @@ common --define=MONGO_VERSION=8.2.0-alpha
 # Default distmod if not specified.
 common --define=MONGO_DISTMOD=""
 
+# Pin down the Microsoft Visual compiler. If you would like to use
+# the default compiler version installed in this host, comment the line.
+common --action_env=BAZEL_VC_FULL_VERSION=14.31.31103
+
+# Default the Visual C Redistribution to v14.3 for Windows installer.
+common --action_env=MONGO_VC_REDIST_FULL_VERSION=v143
+
 # Default if .git directory is not present
 common --define=GIT_COMMIT_HASH="nogitversion"
-
-# The version of Visual C++ to use
-common --define=MSVC_VERSION="14.3"
 
 # TODO(WT-12780): delete this once wiredtiger switches to /.bazelrc.evergreen.
 try-import %workspace%/.bazelrc.evergreen_engflow_creds

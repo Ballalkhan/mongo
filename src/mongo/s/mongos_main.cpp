@@ -77,10 +77,10 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/process_health/fault_manager.h"
 #include "mongo/db/profile_filter_impl.h"
-#include "mongo/db/query/query_settings/query_settings_service.h"
 #include "mongo/db/query/search/mongot_options.h"
 #include "mongo/db/query/search/search_task_executors.h"
 #include "mongo/db/read_write_concern_defaults.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session/kill_sessions.h"
@@ -129,7 +129,6 @@
 #include "mongo/s/session_catalog_router.h"
 #include "mongo/s/sessions_collection_sharded.h"
 #include "mongo/s/sharding_initialization.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/s/version_mongos.h"
 #include "mongo/scripting/engine.h"
@@ -217,7 +216,7 @@ public:
                 ->shardRegistry()
                 ->updateReplSetHosts(connStr,
                                      ShardRegistry::ConnectionStringUpdateType::kConfirmed);
-        } catch (const ExceptionForCat<ErrorCategory::ShutdownError>& e) {
+        } catch (const ExceptionFor<ErrorCategory::ShutdownError>& e) {
             LOGV2(471694,
                   "Unable to update the shard registry with confirmed replica set",
                   "error"_attr = e);
@@ -489,34 +488,8 @@ void cleanupTask(const ShutdownTaskArgs& shutdownArgs) {
             validator->shutDown();
         }
 
-        if (auto cursorManager = Grid::get(opCtx)->getCursorManager()) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownCursorManager,
-                                           &shutdownTimeElapsedBuilder);
-            cursorManager->shutdown(opCtx);
-        }
-
-        if (auto pool = Grid::get(opCtx)->getExecutorPool()) {
-            LOGV2_OPTIONS(7698300, {LogComponent::kSharding}, "Shutting down the ExecutorPool");
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownExecutorPool,
-                                           &shutdownTimeElapsedBuilder);
-            pool->shutdownAndJoin();
-        }
-
-        if (auto shardRegistry = Grid::get(opCtx)->shardRegistry()) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownShardRegistry,
-                                           &shutdownTimeElapsedBuilder);
-            shardRegistry->shutdown();
-        }
-
-        if (Grid::get(serviceContext)->isShardingInitialized()) {
-            SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
-                                           TimedSectionId::shutDownCatalogCache,
-                                           &shutdownTimeElapsedBuilder);
-            LOGV2_OPTIONS(7698301, {LogComponent::kSharding}, "Shutting down the CatalogCache");
-            Grid::get(serviceContext)->catalogCache()->shutDownAndJoin();
+        if (auto grid = Grid::get(opCtx)) {
+            grid->shutdown(opCtx, &shutdownTimeElapsedBuilder, true /* isMongos */);
         }
 
         {
@@ -810,7 +783,6 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
     ReadWriteConcernDefaults::create(serviceContext->getService(ClusterRole::RouterServer),
                                      readWriteConcernDefaultsCacheLookupMongoS);
     ChangeStreamOptionsManager::create(serviceContext);
-    query_settings::initializeForRouter(serviceContext);
 
     auto opCtxHolder = tc->makeOperationContext();
     auto const opCtx = opCtxHolder.get();

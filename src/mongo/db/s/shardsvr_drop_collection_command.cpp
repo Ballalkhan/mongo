@@ -46,10 +46,12 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/profile_settings.h"
+#include "mongo/db/query/query_feature_flags_gen.h"
 #include "mongo/db/s/drop_collection_coordinator.h"
 #include "mongo/db/s/drop_collection_coordinator_document_gen.h"
 #include "mongo/db/s/sharding_ddl_coordinator_gen.h"
 #include "mongo/db/s/sharding_ddl_coordinator_service.h"
+#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/rpc/op_msg.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
@@ -57,7 +59,6 @@
 #include "mongo/s/collection_routing_info_targeter.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-#include "mongo/s/sharding_state.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/future.h"
 #include "mongo/util/uuid.h"
@@ -117,15 +118,26 @@ public:
                 DatabaseProfileSettings::get(opCtx->getServiceContext())
                     .getDatabaseProfileLevel(ns().dbName()));
 
-            auto coordinatorDoc = DropCollectionCoordinatorDocument();
-            coordinatorDoc.setShardingDDLCoordinatorMetadata(
-                {{ns(), DDLCoordinatorTypeEnum::kDropCollection}});
-            coordinatorDoc.setCollectionUUID(request().getCollectionUUID());
+            std::shared_ptr<DropCollectionCoordinator> dropCollCoordinator;
+            {
+                auto coordinatorDoc = DropCollectionCoordinatorDocument();
 
-            auto service = ShardingDDLCoordinatorService::getService(opCtx);
-            auto dropCollCoordinator =
-                checked_pointer_cast<DropCollectionCoordinator>(service->getOrCreateInstance(
-                    opCtx, coordinatorDoc.toBSON(), FixedFCVRegion{opCtx}));
+                FixedFCVRegion fcvRegion(opCtx);
+                coordinatorDoc.setShardingDDLCoordinatorMetadata(
+                    {{ns(), DDLCoordinatorTypeEnum::kDropCollection}});
+                coordinatorDoc.setCollectionUUID(request().getCollectionUUID());
+                const auto changeStreamReadersV2Enabled =
+                    feature_flags::gFeatureFlagChangeStreamPreciseShardTargeting.isEnabled(
+                        VersionContext::getDecoration(opCtx), fcvRegion->acquireFCVSnapshot());
+
+                coordinatorDoc.setChangeStreamPreciseShardTargetingEnabled(
+                    changeStreamReadersV2Enabled);
+
+                auto service = ShardingDDLCoordinatorService::getService(opCtx);
+                dropCollCoordinator =
+                    checked_pointer_cast<DropCollectionCoordinator>(service->getOrCreateInstance(
+                        opCtx, coordinatorDoc.toBSON(), FixedFCVRegion{opCtx}));
+            }
 
             dropCollCoordinator->getCompletionFuture().get(opCtx);
         }

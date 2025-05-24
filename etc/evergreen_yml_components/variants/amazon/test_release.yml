@@ -36,6 +36,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - amazon2-latest-large
+      - name: run_unit_tests_TG
+        distros:
+          - amazon2-latest-large
       - name: test_packages
         distros:
           - ubuntu2204-large
@@ -79,6 +82,9 @@ buildvariants:
       large_distro_name: amazon2-latest-large
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - amazon2-latest-large
+      - name: run_unit_tests_TG
         distros:
           - amazon2-latest-large
       - name: test_packages
@@ -211,6 +217,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - amazon2023.3-large
+      - name: run_unit_tests_TG
+        distros:
+          - amazon2023.3-large
       - name: test_packages
         distros:
           - ubuntu2204-large
@@ -251,6 +260,9 @@ buildvariants:
       compile_variant: enterprise-amazon2023
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - amazon2023.3-large
+      - name: run_unit_tests_TG
         distros:
           - amazon2023.3-large
       - name: test_packages
@@ -339,6 +351,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - amazon2023.3-arm64-large
+      - name: run_unit_tests_TG
+        distros:
+          - amazon2023.3-arm64-large
       - name: test_packages
         distros:
           - ubuntu2204-arm64-large
@@ -380,6 +395,9 @@ buildvariants:
       compile_variant: enterprise-amazon2023-arm64
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - amazon2023.3-arm64-large
+      - name: run_unit_tests_TG
         distros:
           - amazon2023.3-arm64-large
       - name: test_packages
@@ -467,6 +485,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - amazon2023-latest-large
+      - name: run_unit_tests_TG
+        distros:
+          - amazon2023-latest-large
       - name: .development_critical !.requires_large_host
       - name: .development_critical .requires_large_host
         distros:
@@ -512,6 +533,9 @@ buildvariants:
       - name: compile_test_and_package_serial_TG
         distros:
           - amazon2-latest-large
+      - name: run_unit_tests_TG
+        distros:
+          - amazon2-latest-large
       - name: .development_critical !.requires_large_host
       - name: .development_critical .requires_large_host
         distros:
@@ -555,6 +579,9 @@ buildvariants:
       large_distro_name: amazon2-arm64-latest-large
     tasks:
       - name: compile_test_and_package_serial_TG
+        distros:
+          - amazon2-arm64-latest-large
+      - name: run_unit_tests_TG
         distros:
           - amazon2-arm64-latest-large
       - name: .development_critical !.requires_large_host

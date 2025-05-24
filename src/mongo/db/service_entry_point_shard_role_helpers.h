@@ -58,7 +58,6 @@
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/transaction_coordinator_service.h"
 #include "mongo/db/server_options.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/transaction/transaction_participant_gen.h"
 #include "mongo/db/transaction_resources.h"
@@ -168,11 +167,6 @@ inline void waitForWriteConcern(OperationContext* opCtx,
         return;
     }
 
-    // Do not increase consumption metrics during wait for write concern, as in serverless this
-    // might cause a tenant to be billed for reading the oplog entry (which might be of
-    // considerable size) of another tenant.
-    ResourceConsumption::PauseMetricsCollectorBlock pauseMetricsCollection(opCtx);
-
     auto lastOpAfterRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
 
     auto waitForWriteConcernAndAppendStatus = [&]() {
@@ -199,11 +193,18 @@ inline void waitForWriteConcern(OperationContext* opCtx,
     // approximation is to use the system’s last op time, which is guaranteed to be >= than the
     // original op time.
 
-    // Ensures that we always wait for write concern, even if that write was a noop. We do not need
-    // to update this for multi-document transactions as read-only/noop transactions will do a noop
-    // write at commit time, which should have incremented the lastOp. And speculative majority
-    // semantics dictate that "abortTransaction" should not wait for write concern on operations the
-    // transaction observed.
+    // Ensures that if we tried to do a write, we wait for write concern, even if that write was
+    // a noop. We do not need to update this for multi-document transactions as read-only/noop
+    // transactions will do a noop write at commit time, which should have incremented the
+    // lastOp. And speculative majority semantics dictate that "abortTransaction" should not
+    // wait for write concern on operations the transaction observed.
+    if (!opCtx->inMultiDocumentTransaction() &&
+        shard_role_details::getLocker(opCtx)->wasGlobalLockTakenForWrite()) {
+        repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+        lastOpAfterRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+        waitForWriteConcernAndAppendStatus();
+        return;
+    }
 
     // Aggregate and getMore requests can be read ops or write ops. We only want to wait for write
     // concern if the op could have done a write (i.e. had any write stages in its pipeline).

@@ -83,11 +83,11 @@ class PartitionIterator;
 
 #define REGISTER_STABLE_WINDOW_FUNCTION(name, parser) \
     REGISTER_WINDOW_FUNCTION_CONDITIONALLY(           \
-        name, parser, kDoesNotRequireFeatureFlag, AllowedWithApiStrict::kAlways, true)
+        name, parser, nullptr /* featureFlag */, AllowedWithApiStrict::kAlways, true)
 
 #define REGISTER_WINDOW_FUNCTION(name, parser, allowedWithApi) \
     REGISTER_WINDOW_FUNCTION_CONDITIONALLY(                    \
-        name, parser, kDoesNotRequireFeatureFlag, allowedWithApi, true)
+        name, parser, nullptr /* featureFlag */, allowedWithApi, true)
 
 /**
  * We store featureFlag in the parserMap, so that it can be checked at runtime to correctly
@@ -96,21 +96,21 @@ class PartitionIterator;
 #define REGISTER_WINDOW_FUNCTION_WITH_FEATURE_FLAG(name, parser, featureFlag, allowedWithApi) \
     REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, featureFlag, allowedWithApi, true)
 
-#define REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, featureFlag, allowedWithApi, ...) \
-    MONGO_INITIALIZER_GENERAL(addToWindowFunctionMap_##name,                                   \
-                              ("BeginWindowFunctionRegistration"),                             \
-                              ("EndWindowFunctionRegistration"))                               \
-    (InitializerContext*) {                                                                    \
-        if (!__VA_ARGS__ ||                                                                    \
-            !CheckableFeatureFlagRef(featureFlag).isEnabled([](auto& fcvGatedFlag) {           \
-                return fcvGatedFlag.isEnabledUseLatestFCVWhenUninitialized(                    \
-                    kNoVersionContext,                                                         \
-                    serverGlobalParams.featureCompatibility.acquireFCVSnapshot());             \
-            })) {                                                                              \
-            return;                                                                            \
-        }                                                                                      \
-        ::mongo::window_function::Expression::registerParser(                                  \
-            "$" #name, parser, featureFlag, allowedWithApi);                                   \
+#define REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, featureFlag, allowedWithApi, ...)  \
+    MONGO_INITIALIZER_GENERAL(addToWindowFunctionMap_##name,                                    \
+                              ("BeginWindowFunctionRegistration"),                              \
+                              ("EndWindowFunctionRegistration"))                                \
+    (InitializerContext*) {                                                                     \
+        /* Require 'featureFlag' to be a constexpr. */                                          \
+        constexpr FeatureFlag* constFeatureFlag{featureFlag};                                   \
+        /* This non-constexpr variable works around a bug in GCC when 'featureFlag' is null. */ \
+        FeatureFlag* featureFlagValue{constFeatureFlag};                                        \
+        bool evaluatedCondition{__VA_ARGS__};                                                   \
+        if (!evaluatedCondition || (featureFlagValue && !featureFlagValue->canBeEnabled())) {   \
+            return;                                                                             \
+        }                                                                                       \
+        ::mongo::window_function::Expression::registerParser(                                   \
+            "$" #name, parser, featureFlag, allowedWithApi);                                    \
     }
 
 #define REGISTER_STABLE_REMOVABLE_WINDOW_FUNCTION(name, accumClass, wfClass)           \
@@ -121,7 +121,7 @@ class PartitionIterator;
         ::mongo::window_function::Expression::registerParser(                          \
             "$" #name,                                                                 \
             ::mongo::window_function::ExpressionRemovable<accumClass, wfClass>::parse, \
-            kDoesNotRequireFeatureFlag,                                                \
+            nullptr, /* featureFlag */                                                 \
             AllowedWithApiStrict::kAlways);                                            \
     }
 
@@ -172,13 +172,13 @@ public:
 
     struct ExpressionParserRegistration {
         Parser parser;
-        CheckableFeatureFlagRef featureFlag;
+        FeatureFlag* featureFlag;
         AllowedWithApiStrict allowedWithApi;
     };
 
     static void registerParser(std::string functionName,
                                Parser parser,
-                               CheckableFeatureFlagRef featureFlag,
+                               FeatureFlag* featureFlag,
                                AllowedWithApiStrict allowedWithApi);
 
     /**
@@ -1035,21 +1035,6 @@ private:
     // Output domain Value is bounded between sMin and sMax (inclusive).
     // First value is min, second value is max.
     std::pair<Value, Value> _sMinAndsMax;
-
-    // Internal parsing helper functions.
-    //
-    // Parses the top level keys to the $minMaxScaler window function BSON.
-    // Expects a '$minMaxScaler' key, and optionally a 'window' key.
-    // First return value of the pair is the unparsed arguments to '$minMaxScaler'.
-    // Second return value of the pair is the parsed WindowBounds.
-    static std::pair<BSONElement, WindowBounds> parseTopLevelKeys(
-        BSONObj obj, const boost::optional<SortPattern>& sortBy, ExpressionContext* expCtx);
-    // Parses the BSON object that is the argument to the '$minMaxScaler' key.
-    // First return value of the pair is the parsed Expression of the 'input' key.
-    // Second return value is the pair representing the sMin and sMax arguments to the window
-    // function.
-    static std::pair<boost::intrusive_ptr<::mongo::Expression>, std::pair<Value, Value>>
-    parseMinMaxScalerArgs(BSONElement minMaxScalerElem, ExpressionContext* expCtx);
 };
 
 /**

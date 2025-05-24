@@ -31,7 +31,8 @@
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
-#include "mongo/db/query/ce/test_utils.h"
+#include "mongo/db/query/ce/ce_test_utils.h"
+#include "mongo/db/query/ce/histogram/histogram_test_utils.h"
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/stats/collection_statistics_mock.h"
 #include "mongo/platform/compiler.h"
@@ -85,15 +86,9 @@ IndexEntry buildMultikeyIndexEntry(const std::vector<std::string>& indexFields,
     MultikeyPaths mkp;
     for (auto&& field : indexFields) {
         if (field == multikeyField) {
-            MONGO_COMPILER_DIAGNOSTIC_PUSH
-            MONGO_COMPILER_DIAGNOSTIC_WORKAROUND_BOOST_SMALL_VECTOR
             mkp.push_back({0U});
-            MONGO_COMPILER_DIAGNOSTIC_POP
         } else {
-            MONGO_COMPILER_DIAGNOSTIC_PUSH
-            MONGO_COMPILER_DIAGNOSTIC_WORKAROUND_BOOST_SMALL_VECTOR
             mkp.push_back({});
-            MONGO_COMPILER_DIAGNOSTIC_POP
         }
     }
     return {kp,
